@@ -2,11 +2,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from src.losses.focal_loss import FocalLoss
-from src.training.train_transformer import (
+from src.evaluation.operating_point import (
     find_threshold_under_fpr_budget,
     is_better_operating_point,
 )
+from src.losses.focal_loss import FocalLoss
 
 
 def test_is_better_operating_point_prefers_higher_recall():

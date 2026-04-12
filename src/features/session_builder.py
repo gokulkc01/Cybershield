@@ -27,6 +27,26 @@ from src.features.feature_config import (
 )
 
 
+def _to_float(value, default: float = 0.0) -> float:
+    """Best-effort numeric conversion for mixed Zeek/CTU field encodings."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return default
+        try:
+            if text.lower().startswith("0x"):
+                return float(int(text, 16))
+            return float(text)
+        except ValueError:
+            return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def segment_by_inactivity(
     group: pd.DataFrame,
     timeout: float = INACTIVITY_TIMEOUT,
@@ -48,49 +68,24 @@ def segment_by_inactivity(
     return sessions
 
 
-def compute_session_iat_stats(session_df: pd.DataFrame) -> Tuple[float, float, float]:
-    """
-    Compute iat_mean, iat_std, iat_cv from the 'iat' column.
-    The 'iat' column was written by zeek_parser per flow.
-    Here we aggregate across the session.
-    """
-    if "iat" not in session_df.columns:
-        return 0.0, 0.0, 0.0
-    iats = session_df["iat"].values.astype(float)
-    iats = iats[iats > 0]   # skip first flow's iat=0
-    if len(iats) == 0:
-        return 0.0, 0.0, 0.0
-    mean = float(np.mean(iats))
-    std  = float(np.std(iats))
-    cv   = std / (mean + 1e-9)
-    return mean, std, cv
-
-
-def flow_row_to_vector(
-    row: pd.Series,
-    iat_mean: float,
-    iat_std: float,
-    iat_cv: float,
-) -> np.ndarray:
+def flow_row_to_vector(row: pd.Series) -> np.ndarray:
     """
     Convert one flow row to a FEATURE_DIM vector.
     Order must exactly match FEATURE_NAMES in feature_config.py.
     """
     feature_map = {
-        "duration": float(row.get("duration", 0) or 0),
-        "orig_bytes": float(row.get("orig_bytes", 0) or 0),
-        "resp_bytes": float(row.get("resp_bytes", 0) or 0),
-        "orig_pkts": float(row.get("orig_pkts", 1) or 1),
-        "resp_pkts": float(row.get("resp_pkts", 0) or 0),
-        "bytes_per_pkt": float(row.get("bytes_per_pkt", 0) or 0),
-        "packet_ratio": float(row.get("packet_ratio", 0) or 0),
-        "byte_ratio": float(row.get("byte_ratio", 0) or 0),
-        "iat_delta": float(row.get("iat_delta", 0) or 0),
-        "byte_delta": float(row.get("byte_delta", 0) or 0),
-        "iat_mean": iat_mean,
-        "iat_std": iat_std,
-        "iat_cv": iat_cv,
-        "is_outbound": float(row.get("is_outbound", 0) or 0),
+        "orig_bytes": _to_float(row.get("orig_bytes", 0), 0.0),
+        "resp_bytes": _to_float(row.get("resp_bytes", 0), 0.0),
+        "orig_pkts": _to_float(row.get("orig_pkts", 1), 1.0),
+        "resp_pkts": _to_float(row.get("resp_pkts", 0), 0.0),
+        "bytes_per_pkt": _to_float(row.get("bytes_per_pkt", 0), 0.0),
+        "packet_ratio": _to_float(row.get("packet_ratio", 0), 0.0),
+        "byte_ratio": _to_float(row.get("byte_ratio", 0), 0.0),
+        "is_outbound": _to_float(row.get("is_outbound", 0), 0.0),
+        "duration": _to_float(row.get("duration", 0), 0.0),
+        "src_port": _to_float(row.get("src_port", 0), 0.0),
+        "dst_port": _to_float(row.get("dst_port", 0), 0.0),
+        "iat": _to_float(row.get("iat", 0), 0.0),
     }
     vec = np.array([feature_map[name] for name in FEATURE_NAMES], dtype=np.float32)
     assert len(vec) == FEATURE_DIM
@@ -99,10 +94,8 @@ def flow_row_to_vector(
 
 def session_to_tensor(session_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     """Convert a session DataFrame to padded tensor + mask."""
-    iat_mean, iat_std, iat_cv = compute_session_iat_stats(session_df)
-
     flow_vectors = np.array([
-        flow_row_to_vector(row, iat_mean, iat_std, iat_cv)
+        flow_row_to_vector(row)
         for _, row in session_df.iterrows()
     ], dtype=np.float32)
 
@@ -113,8 +106,8 @@ def session_to_tensor(session_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]
     padded = np.zeros((SESSION_LEN, FEATURE_DIM), dtype=np.float32)
     padded[:n_real] = flow_vectors
 
-    mask = np.ones(SESSION_LEN, dtype=bool)
-    mask[:n_real] = False    # True = padding (PyTorch convention)
+    mask = np.zeros(SESSION_LEN, dtype=bool)
+    mask[:n_real] = True
 
     return padded, mask
 
@@ -188,12 +181,14 @@ def build_sessions(
 
 
 def save_sessions(sessions, labels, masks, path: str) -> None:
-    np.savez_compressed(path, sessions=sessions, labels=labels, masks=masks)
+    np.savez_compressed(path, X=sessions, y=labels, masks=masks, feature_names=np.array(FEATURE_NAMES))
     print(f"Saved {len(sessions):,} sessions → {path}")
 
 
 def load_sessions(path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     data = np.load(path)
+    if "X" in data and "y" in data:
+        return data["X"], data["y"], data["masks"]
     return data["sessions"], data["labels"], data["masks"]
 
 
@@ -202,7 +197,7 @@ def sessions_to_flat(sessions: np.ndarray, masks: np.ndarray) -> np.ndarray:
     N = sessions.shape[0]
     flat = np.zeros((N, FEATURE_DIM * 4), dtype=np.float32)
     for i in range(N):
-        real = sessions[i][~masks[i]]
+        real = sessions[i][masks[i]]
         if len(real) == 0:
             real = sessions[i][:1]
         flat[i] = np.concatenate([

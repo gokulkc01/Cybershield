@@ -36,6 +36,11 @@ def _read_generic_csv(path: str) -> pd.DataFrame:
     return pd.read_csv(path, sep=None, engine="python", low_memory=False)
 
 
+def _read_binetflow(path: str) -> pd.DataFrame:
+    """Read Argus/Stratosphere .binetflow exports."""
+    return pd.read_csv(path, low_memory=False)
+
+
 def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Map common flow column aliases to CyberShield canonical names."""
     rename_map = {
@@ -100,7 +105,9 @@ def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     out["dst_ip"] = out["dst_ip"].astype(str)
     out["proto"] = out["proto"].astype(str).str.lower()
 
-    out["is_outbound"] = out["src_ip"].apply(is_private_ip).astype(float)
+    src_is_private = out["src_ip"].apply(is_private_ip).astype(bool)
+    dst_is_private = out["dst_ip"].apply(is_private_ip).astype(bool)
+    out["is_outbound"] = (src_is_private & ~dst_is_private).astype(float)
 
     out = out.sort_values(["src_ip", "dst_ip", "proto", "ts"], kind="mergesort").reset_index(drop=True)
     grp = out.groupby(["src_ip", "dst_ip", "proto"], sort=False)
@@ -108,22 +115,21 @@ def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     out["iat_delta"] = grp["iat"].diff().fillna(0.0)
     out["byte_delta"] = grp["orig_bytes"].diff().fillna(0.0)
 
-    out["iat_mean"] = 0.0
-    out["iat_std"] = 0.0
-    out["iat_cv"] = 0.0
-
     # Ensure all selected model features exist.
     missing_features = [c for c in FEATURE_NAMES if c not in out.columns]
     if missing_features:
         raise ValueError(f"Missing feature columns: {missing_features}")
 
-    cols = ["ts", "src_ip", "dst_ip", "proto", "iat"] + FEATURE_NAMES
+    cols = ["ts", "src_ip", "dst_ip", "proto"] + FEATURE_NAMES
     return out[cols].replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
 
 def _load_flow_dataframe(path: str) -> pd.DataFrame:
     """Load raw flow file and return canonical dataframe for session building."""
     lower = path.lower()
+    if lower.endswith(".binetflow"):
+        return _standardize_columns(_read_binetflow(path))
+
     # Zeek conn.log detection by extension or the common marker in first line.
     if lower.endswith(".log") or "conn" in os.path.basename(lower):
         try:
@@ -209,7 +215,7 @@ def build_mcfp_npz(
     masks = masks[shuffle_idx]
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    np.savez_compressed(output_path, X=X, y=y, masks=masks)
+    np.savez_compressed(output_path, X=X, y=y, masks=masks, feature_names=np.array(FEATURE_NAMES))
 
     c2_count = int((y == LABEL_C2).sum())
     benign_count = int((y == LABEL_BENIGN).sum())

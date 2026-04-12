@@ -11,90 +11,15 @@ import os
 import torch
 import torch.optim as optim
 import numpy as np
-from sklearn.metrics import classification_report, confusion_matrix, precision_recall_curve, f1_score, roc_auc_score, roc_curve
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, roc_auc_score
 
 # Import our custom architecture and dataloader
+from src.data_loader.feature_transforms import FeatureTransformConfig
 from src.models.transformer import C2Transformer
 from src.data_loader.torch_dataset import create_dataloaders
+from src.evaluation.operating_point import find_threshold_under_fpr_budget, is_better_operating_point
 from src.losses.focal_loss import FocalLoss
-from src.features.feature_config import FOCAL_ALPHA, FOCAL_GAMMA, MAX_FPR_BUDGET
-
-def find_best_threshold(y_true, y_prob):
-    """Finds the optimal probability threshold to maximize F1."""
-    precisions, recalls, thresholds = precision_recall_curve(y_true, y_prob)
-    precisions, recalls = precisions[:-1], recalls[:-1]
-    
-    # Avoid division by zero
-    f1_scores = np.where((precisions + recalls) > 0, 
-                         2 * (precisions * recalls) / (precisions + recalls), 
-                         0.0)
-    
-    best_idx = np.argmax(f1_scores)
-    return thresholds[best_idx], f1_scores[best_idx]
-
-
-def find_threshold_under_fpr_budget(y_true, y_prob, max_fpr: float = 0.005):
-    """Select threshold maximizing recall while keeping FPR <= max_fpr.
-
-    Tie-break rule: choose the highest threshold among candidates with equal recall
-    to reduce avoidable false positives at deployment.
-    """
-    if not (0.0 <= max_fpr <= 1.0):
-        raise ValueError(f"max_fpr must be in [0, 1], got {max_fpr}")
-
-    y_true = np.asarray(y_true)
-    y_prob = np.asarray(y_prob)
-
-    if y_true.size == 0:
-        return 1.0, 0.0, 0.0, False
-
-    has_positive = np.any(y_true == 1)
-    has_negative = np.any(y_true == 0)
-
-    if not has_positive:
-        return 1.0, 0.0, 0.0, False
-    if not has_negative:
-        return 0.0, 1.0, 0.0, True
-
-    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
-    valid_idx = np.where(fpr <= max_fpr)[0]
-
-    if len(valid_idx) == 0:
-        # No feasible operating point under the budget; pick strictest threshold.
-        return 1.0, 0.0, 0.0, False
-
-    valid_fpr = fpr[valid_idx]
-    valid_tpr = tpr[valid_idx]
-    valid_thr = thresholds[valid_idx]
-
-    best_tpr = float(valid_tpr.max())
-    best_candidates = np.where(valid_tpr == best_tpr)[0]
-    chosen = best_candidates[np.argmax(valid_thr[best_candidates])]
-
-    return float(valid_thr[chosen]), float(valid_tpr[chosen]), float(valid_fpr[chosen]), True
-
-
-def is_better_operating_point(
-    candidate_recall: float,
-    candidate_f1: float,
-    candidate_fpr: float,
-    best_recall: float,
-    best_f1: float,
-    best_fpr: float,
-) -> bool:
-    """Return True when the candidate operating point is preferred.
-
-    Primary objective: maximize Recall under the FPR budget.
-    Tie-breaks: higher F1, then lower FPR.
-    """
-    if candidate_recall > best_recall + 1e-12:
-        return True
-    if abs(candidate_recall - best_recall) <= 1e-12:
-        if candidate_f1 > best_f1 + 1e-12:
-            return True
-        if abs(candidate_f1 - best_f1) <= 1e-12 and candidate_fpr < best_fpr - 1e-12:
-            return True
-    return False
+from src.features.feature_config import FEATURE_DIM, FOCAL_ALPHA, FOCAL_GAMMA, MAX_FPR_BUDGET, SESSION_LEN
 
 def train_model(
     npz_path: str = "data/processed/ctu13_c2_sessions.npz",
@@ -107,6 +32,10 @@ def train_model(
     focal_alpha: float = FOCAL_ALPHA,
     focal_gamma: float = FOCAL_GAMMA,
     max_fpr_budget: float = MAX_FPR_BUDGET,
+    use_derivative_features: bool = False,
+    normalize_features: bool = True,
+    log_scale_features: tuple[str, ...] | None = None,
+    ablate_features: tuple[str, ...] = (),
 ):
     os.makedirs(model_save_dir, exist_ok=True)
     best_model_path = os.path.join(model_save_dir, "best_transformer.pth")
@@ -114,15 +43,33 @@ def train_model(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n[INFO] Initializing Training on Device: {device}")
 
-    # Data loaders are intentionally built with natural class priors.
-    train_loader, val_loader, test_loader = create_dataloaders(npz_path, batch_size, min_flows)
+    transform_config = FeatureTransformConfig(
+        log_scale_features=tuple(log_scale_features) if log_scale_features is not None else FeatureTransformConfig().log_scale_features,
+        ablate_features=tuple(ablate_features),
+    )
 
-    model = C2Transformer().to(device)
+    # Data loaders are intentionally built with natural class priors.
+    train_loader, val_loader, test_loader, normalizer, transform_config = create_dataloaders(
+        npz_path,
+        batch_size,
+        min_flows,
+        normalize=normalize_features,
+        transform_config=transform_config,
+    )
+
+    model = C2Transformer(
+        feature_dim=FEATURE_DIM,
+        seq_len=SESSION_LEN,
+        use_derivative_features=use_derivative_features,
+    ).to(device)
     criterion = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-3)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=4)
 
     print(f"[INFO] Loss: FocalLoss(alpha={focal_alpha}, gamma={focal_gamma})")
+    print(f"[INFO] Derivative feature augmentation: {use_derivative_features}")
+    print(f"[INFO] Feature normalization: {normalize_features}")
+    print(f"[INFO] Feature ablations: {list(transform_config.ablate_features)}")
     print(f"[INFO] Validation threshold policy: max Recall under FPR <= {max_fpr_budget:.4f}")
 
     best_val_recall_budget = 0.0
@@ -224,6 +171,12 @@ def train_model(
                 'best_val_recall_budget': best_val_recall_budget,
                 'best_val_f1': best_val_f1,
                 'best_val_fpr_budget': best_val_fpr_budget,
+                'use_derivative_features': use_derivative_features,
+                'normalize_features': normalize_features,
+                'feature_normalizer': normalizer.to_checkpoint_dict() if normalizer is not None else None,
+                'feature_transform_config': transform_config.to_checkpoint_dict(),
+                'feature_dim': FEATURE_DIM,
+                'session_len': SESSION_LEN,
             }, best_model_path)
             print(f"  --> Model improved! Saved to {best_model_path}")
         else:

@@ -110,11 +110,6 @@ def load_and_standardize_ctu13(file_path: str) -> pd.DataFrame:
     df["iat_delta"] = grp["iat"].diff().fillna(0.0)
     df["byte_delta"] = grp["orig_bytes"].diff().fillna(0.0)
 
-    # Placeholder for session-level stats
-    df["iat_mean"] = 0.0
-    df["iat_std"]  = 0.0
-    df["iat_cv"]   = 0.0
-
     return df
 
 # =========================================================
@@ -138,7 +133,7 @@ def execute_pipeline(input_path: str, output_path: str):
     # -----------------------------
     # Feature validation
     # -----------------------------
-    required_cols = FEATURE_NAMES + ["ts", "src_ip", "dst_ip", "proto", "iat", "label"]
+    required_cols = ["ts", "src_ip", "dst_ip", "proto"] + FEATURE_NAMES + ["label"]
 
     missing = set(required_cols) - set(df.columns)
     if missing:
@@ -153,7 +148,7 @@ def execute_pipeline(input_path: str, output_path: str):
     # Build sessions
     # -----------------------------
     print("[INFO] Handing off to Session Builder...")
-    sessions, labels, metadata = build_sessions(df)
+    sessions, labels, masks = build_sessions(df)
 
     # -----------------------------
     # Save dataset
@@ -165,7 +160,8 @@ def execute_pipeline(input_path: str, output_path: str):
         output_path,
         X=sessions,
         y=labels,
-        meta=metadata
+        masks=masks,
+        feature_names=np.array(FEATURE_NAMES),
     )
 
     print(f"[SUCCESS] Saved {len(sessions)} sequences to disk.")

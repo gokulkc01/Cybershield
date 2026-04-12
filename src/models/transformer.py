@@ -11,6 +11,8 @@ and output a binary C2 classification logit.
 import torch
 import torch.nn as nn
 
+from src.features.feature_config import DERIVATIVE_FEATURE_NAMES, IAT_IDX, ORIG_BYTES_IDX
+
 class C2Transformer(nn.Module):
     def __init__(
         self, 
@@ -20,15 +22,19 @@ class C2Transformer(nn.Module):
         nhead: int = 4, 
         num_layers: int = 3, 
         dim_feedforward: int = 128, 
-        dropout: float = 0.2
+        dropout: float = 0.2,
+        use_derivative_features: bool = False,
     ):
         super(C2Transformer, self).__init__()
         
         self.d_model = d_model
         self.seq_len = seq_len
+        self.feature_dim = feature_dim
+        self.use_derivative_features = use_derivative_features
+        effective_feature_dim = feature_dim + (len(DERIVATIVE_FEATURE_NAMES) if use_derivative_features else 0)
         
         # 1. Input Projection & Stabilization
-        self.input_projection = nn.Linear(feature_dim, d_model)
+        self.input_projection = nn.Linear(effective_feature_dim, d_model)
         self.input_norm = nn.LayerNorm(d_model)
         self.input_dropout = nn.Dropout(dropout)
         
@@ -69,7 +75,34 @@ class C2Transformer(nn.Module):
         nn.init.normal_(self.pos_encoder, std=0.02)
         nn.init.normal_(self.cls_token, std=0.02)
 
+    def _append_derivative_features(self, x: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
+        """Augment the base (B, 20, 12) tensor with sequential deltas before encoding."""
+        real_mask = (~padding_mask).unsqueeze(-1).to(dtype=x.dtype)
+        x = x * real_mask
+
+        iat = x[:, :, IAT_IDX:IAT_IDX + 1]
+        orig_bytes = x[:, :, ORIG_BYTES_IDX:ORIG_BYTES_IDX + 1]
+
+        iat_delta = torch.zeros_like(iat)
+        byte_delta = torch.zeros_like(orig_bytes)
+
+        valid_transitions = real_mask[:, 1:, :] * real_mask[:, :-1, :]
+        iat_delta[:, 1:, :] = (iat[:, 1:, :] - iat[:, :-1, :]) * valid_transitions
+        byte_delta[:, 1:, :] = (orig_bytes[:, 1:, :] - orig_bytes[:, :-1, :]) * valid_transitions
+
+        return torch.cat((x, iat_delta, byte_delta), dim=-1)
+
     def forward(self, x: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3:
+            raise ValueError(f"Expected x to have shape (B, {self.seq_len}, {self.feature_dim}), got {tuple(x.shape)}")
+        if x.shape[1] != self.seq_len:
+            raise ValueError(f"Expected seq_len={self.seq_len}, got {x.shape[1]}")
+        if x.shape[2] != self.feature_dim:
+            raise ValueError(f"Expected feature_dim={self.feature_dim}, got {x.shape[2]}")
+
+        if self.use_derivative_features:
+            x = self._append_derivative_features(x, padding_mask)
+
         B = x.size(0)
         
         # Project and stabilize inputs

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from src.evaluation.evaluate_transformer import find_threshold_under_fpr_budget
+from src.evaluation.operating_point import find_threshold_under_fpr_budget
 
 
 def test_find_threshold_under_fpr_budget_prefers_highest_recall_within_budget():

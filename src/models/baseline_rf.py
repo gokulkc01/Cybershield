@@ -37,6 +37,7 @@ from sklearn.metrics import (
 from typing import Tuple
 
 # Ensure these match your project structure
+from src.data_loader.npz_utils import load_session_npz
 from src.features.feature_config import FEATURE_DIM, SESSION_LEN, LABEL_C2, LABEL_BENIGN, FEATURE_NAMES
 from src.features.session_builder import sessions_to_flat
 
@@ -45,22 +46,12 @@ from src.features.session_builder import sessions_to_flat
 
 def load_npz(path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load sessions, labels, masks from .npz file."""
-    if not os.path.exists(path):
+    try:
+        sessions, labels, masks = load_session_npz(path)
+    except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"NPZ not found: {path}\n"
-            "Run ctu13_processor.py first to generate it."
-        )
-    data = np.load(path, allow_pickle=True)
-    
-    sessions = data["X"].astype(np.float32)      # (N, 20, 12)
-    labels   = data["y"].astype(np.int64)        # (N,)
-    
-    # --- ROBUST MASK INFERENCE ---
-    if "masks" in data:
-        masks = data["masks"].astype(bool)
-    else:
-        # Infer masks from non-zero rows (True if real flow, False if zero-padding)
-        masks = (sessions.sum(axis=2) != 0)
+            f"{exc}\nRun ctu13_processor.py first to generate it."
+        ) from exc
 
     # Validate shape
     assert sessions.ndim == 3, f"Expected 3D sessions, got shape {sessions.shape}"
