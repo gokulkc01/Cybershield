@@ -4,6 +4,35 @@
 **Experiment Start**: Week 1 (May 13)  
 **Expected Completion**: Week 3 (May 31)
 
+## Status Snapshot (Updated May 10, 2026)
+
+**Overall completion (engineering scaffolding + setup)**: ~55%  
+**Overall completion (scientific experiment execution)**: ~20%
+
+### Completed Since Start
+- [x] Feature branch created and pushed (`research/multifamily_generalization`)
+- [x] Environment setup validated (`.venv`, dependencies, tests passing)
+- [x] Baseline test suite passing (74/74)
+- [x] `FamilyAwareSplitter` implemented
+- [x] CTU-13 multifamily loader scaffold implemented
+- [x] Experiment 10-feature schema module implemented
+- [x] Multifamily metrics module implemented (PR-AUC, ROC-AUC, recall@FPR, precision@recall)
+- [x] Main training/eval pipeline wired to experiment schema via dedicated multifamily entrypoint
+- [x] 12→10 feature conversion utility implemented
+- [x] Available CTU processed NPZ files converted to 10-feature schema
+- [x] Available-data multifamily manifest generated
+
+### Current Blockers (Experiment Not Complete Yet)
+- [ ] Raw CTU-13 scenario files for all required families are not present (currently only one raw capture file exists under `data/raw/ctu13`)
+- [ ] Family-specific scenario NPZs for exact split target (`neris`, `kraken`, `conficker`) are missing
+- [ ] True family-separated train/val/test execution has not run yet
+
+### Immediate Next Executable Steps
+- [ ] Generate scenario-specific NPZs for CTU-13 Scenario 1 (Neris), Scenario 2 (Kraken), Scenario 9 (Conficker)
+- [ ] Build family-aware split manifest from those scenario-specific files
+- [ ] Run multifamily training/evaluation pipeline on that split
+- [ ] Fill Week 3 metrics + decision logic sections with real results
+
 ---
 
 ## Pre-Implementation Checklist (Week 1 - Before Day 1)
