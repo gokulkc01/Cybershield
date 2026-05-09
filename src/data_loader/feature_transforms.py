@@ -17,8 +17,9 @@ class FeatureTransformConfig:
     log_scale_features: tuple[str, ...] = tuple(LOG_SCALE_DEFAULT_FEATURES)
     ablate_features: tuple[str, ...] = ()
 
-    def validate(self) -> None:
-        invalid = [name for name in self.log_scale_features + self.ablate_features if name not in FEATURE_INDEX]
+    def validate(self, feature_index: dict[str, int] | None = None) -> None:
+        lookup = feature_index or FEATURE_INDEX
+        invalid = [name for name in self.log_scale_features + self.ablate_features if name not in lookup]
         if invalid:
             raise ValueError(f"Unknown feature names in transform config: {invalid}")
 
@@ -42,23 +43,25 @@ def apply_feature_transforms(
     sequences: np.ndarray,
     masks: np.ndarray,
     config: FeatureTransformConfig | None,
+    feature_names: tuple[str, ...] | list[str] | None = None,
 ) -> np.ndarray:
     if config is None:
         config = FeatureTransformConfig()
-    config.validate()
+    feature_index = {name: idx for idx, name in enumerate(feature_names)} if feature_names is not None else FEATURE_INDEX
+    config.validate(feature_index)
 
     transformed = sequences.astype(np.float32, copy=True)
     valid = masks.astype(bool)
 
     for feature in config.log_scale_features:
-        idx = FEATURE_INDEX[feature]
+        idx = feature_index[feature]
         values = transformed[:, :, idx]
         values = np.where(valid, values, 0.0)
         values = np.sign(values) * np.log1p(np.abs(values))
         transformed[:, :, idx] = values.astype(np.float32)
 
     for feature in config.ablate_features:
-        idx = FEATURE_INDEX[feature]
+        idx = feature_index[feature]
         transformed[:, :, idx] = 0.0
 
     transformed[~valid] = 0.0

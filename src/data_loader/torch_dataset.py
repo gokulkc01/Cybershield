@@ -51,9 +51,9 @@ def create_dataloaders(
         transform_config = FeatureTransformConfig()
     normalizer = None
     x_train, x_val, x_test = splits.x_train, splits.x_val, splits.x_test
-    x_train = apply_feature_transforms(x_train, splits.m_train, transform_config)
-    x_val = apply_feature_transforms(x_val, splits.m_val, transform_config)
-    x_test = apply_feature_transforms(x_test, splits.m_test, transform_config)
+    x_train = apply_feature_transforms(x_train, splits.m_train, transform_config, feature_names=expected_feature_names)
+    x_val = apply_feature_transforms(x_val, splits.m_val, transform_config, feature_names=expected_feature_names)
+    x_test = apply_feature_transforms(x_test, splits.m_test, transform_config, feature_names=expected_feature_names)
     print(
         f"[INFO] Applied feature transforms: "
         f"log_scale={list(transform_config.log_scale_features)} | "

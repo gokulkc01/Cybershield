@@ -141,7 +141,12 @@ def evaluate_zero_shot(
     )
     
     transform_config = FeatureTransformConfig.from_checkpoint_dict(checkpoint.get("feature_transform_config"))
-    sequences = apply_feature_transforms(sequences, masks, transform_config)
+    sequences = apply_feature_transforms(
+        sequences,
+        masks,
+        transform_config,
+        feature_names=expected_feature_names,
+    )
     
     if checkpoint.get("normalize_features", False):
         normalizer = FeatureNormalizer.from_checkpoint_dict(checkpoint.get("feature_normalizer"))

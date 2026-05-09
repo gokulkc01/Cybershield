@@ -6,8 +6,8 @@
 
 ## Status Snapshot (Updated May 10, 2026)
 
-**Overall completion (engineering scaffolding + setup)**: ~55%  
-**Overall completion (scientific experiment execution)**: ~20%
+**Overall completion (engineering scaffolding + setup)**: ~70%  
+**Overall completion (scientific experiment execution)**: ~30%
 
 ### Completed Since Start
 - [x] Feature branch created and pushed (`research/multifamily_generalization`)
@@ -21,11 +21,14 @@
 - [x] 12→10 feature conversion utility implemented
 - [x] Available CTU processed NPZ files converted to 10-feature schema
 - [x] Available-data multifamily manifest generated
+- [x] Available-data fallback split generated (`random_stratified`)
+- [x] End-to-end multifamily smoke run completed on tiny 10-feature split (`experiments/multifamily_generalization/smoke_tiny`)
 
 ### Current Blockers (Experiment Not Complete Yet)
 - [ ] Raw CTU-13 scenario files for all required families are not present (currently only one raw capture file exists under `data/raw/ctu13`)
 - [ ] Family-specific scenario NPZs for exact split target (`neris`, `kraken`, `conficker`) are missing
 - [ ] True family-separated train/val/test execution has not run yet
+- [ ] Current available-data split is heavily imbalanced and not suitable for scientific conclusions
 
 ### Immediate Next Executable Steps
 - [ ] Generate scenario-specific NPZs for CTU-13 Scenario 1 (Neris), Scenario 2 (Kraken), Scenario 9 (Conficker)

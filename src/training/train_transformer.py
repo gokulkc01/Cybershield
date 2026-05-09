@@ -80,8 +80,8 @@ def train_model(
             expected_session_len=expected_session_len,
         )
         
-        train_seq = apply_feature_transforms(train_seq, train_masks, transform_config)
-        val_seq = apply_feature_transforms(val_seq, val_masks, transform_config)
+        train_seq = apply_feature_transforms(train_seq, train_masks, transform_config, feature_names=expected_feature_names)
+        val_seq = apply_feature_transforms(val_seq, val_masks, transform_config, feature_names=expected_feature_names)
         
         if normalize_features:
             normalizer = fit_feature_normalizer(train_seq, train_masks)
