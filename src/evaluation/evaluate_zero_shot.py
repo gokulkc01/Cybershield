@@ -118,6 +118,9 @@ def evaluate_zero_shot(
     split_metadata: str | None = None,
     batch_size: int = 256,
     device: str | None = None,
+    expected_feature_names: tuple[str, ...] | None = None,
+    expected_feature_dim: int = FEATURE_DIM,
+    expected_session_len: int = SESSION_LEN,
 ) -> dict:
     """Evaluate model on test set, optionally broken down by source."""
     print(f"\n[INFO] Loading checkpoint from {checkpoint_path}...")
@@ -131,7 +134,11 @@ def evaluate_zero_shot(
     
     # Load features and apply transforms
     print(f"[INFO] Loading test set from {test_npz}...")
-    sequences, labels, masks = load_session_npz(test_npz)
+    sequences, labels, masks = load_session_npz(
+        test_npz,
+        expected_feature_names=expected_feature_names,
+        expected_session_len=expected_session_len,
+    )
     
     transform_config = FeatureTransformConfig.from_checkpoint_dict(checkpoint.get("feature_transform_config"))
     sequences = apply_feature_transforms(sequences, masks, transform_config)
@@ -142,8 +149,8 @@ def evaluate_zero_shot(
     
     # Load model
     model = C2Transformer(
-        feature_dim=FEATURE_DIM,
-        seq_len=SESSION_LEN,
+        feature_dim=expected_feature_dim,
+        seq_len=expected_session_len,
         use_derivative_features=bool(checkpoint.get("use_derivative_features", False)),
     ).to(device_obj)
     model.load_state_dict(checkpoint["model_state_dict"])

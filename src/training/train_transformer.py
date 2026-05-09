@@ -51,6 +51,9 @@ def train_model(
     ablate_features: tuple[str, ...] = (),
     run_final_test_eval: bool = True,
     val_npz_path: str | None = None,
+    expected_feature_names: tuple[str, ...] | None = None,
+    expected_feature_dim: int = FEATURE_DIM,
+    expected_session_len: int = SESSION_LEN,
 ):
     os.makedirs(model_save_dir, exist_ok=True)
     best_model_path = os.path.join(model_save_dir, "best_transformer.pth")
@@ -66,8 +69,16 @@ def train_model(
     # Data loaders: use separate val NPZ if provided (for v2 splits), else internal split
     if val_npz_path:
         print(f"[INFO] Loading train/val from separate NPZs (v2 mode)...")
-        train_seq, train_labels, train_masks = load_session_npz(npz_path)
-        val_seq, val_labels, val_masks = load_session_npz(val_npz_path)
+        train_seq, train_labels, train_masks = load_session_npz(
+            npz_path,
+            expected_feature_names=expected_feature_names,
+            expected_session_len=expected_session_len,
+        )
+        val_seq, val_labels, val_masks = load_session_npz(
+            val_npz_path,
+            expected_feature_names=expected_feature_names,
+            expected_session_len=expected_session_len,
+        )
         
         train_seq = apply_feature_transforms(train_seq, train_masks, transform_config)
         val_seq = apply_feature_transforms(val_seq, val_masks, transform_config)
@@ -93,11 +104,13 @@ def train_model(
             min_flows,
             normalize=normalize_features,
             transform_config=transform_config,
+            expected_feature_names=expected_feature_names,
+            expected_session_len=expected_session_len,
         )
 
     model = C2Transformer(
-        feature_dim=FEATURE_DIM,
-        seq_len=SESSION_LEN,
+        feature_dim=expected_feature_dim,
+        seq_len=expected_session_len,
         use_derivative_features=use_derivative_features,
     ).to(device)
     criterion = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
@@ -219,8 +232,8 @@ def train_model(
                 'normalize_features': normalize_features,
                 'feature_normalizer': normalizer.to_checkpoint_dict() if normalizer is not None else None,
                 'feature_transform_config': transform_config.to_checkpoint_dict(),
-                'feature_dim': FEATURE_DIM,
-                'session_len': SESSION_LEN,
+                'feature_dim': expected_feature_dim,
+                'session_len': expected_session_len,
             }, best_model_path)
             print(f"  --> Model improved! Saved to {best_model_path}")
         else:

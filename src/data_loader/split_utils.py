@@ -617,6 +617,8 @@ class SessionSplits:
 def load_filtered_sessions(
     npz_path: str,
     min_flows: int = 5,
+    expected_feature_names: Sequence[str] | None = None,
+    expected_session_len: int | None = None,
 ) -> tuple:
     """Load sessions from NPZ and filter by minimum real flows.
 
@@ -625,7 +627,11 @@ def load_filtered_sessions(
     """
     from src.data_loader.npz_utils import load_session_npz
 
-    sequences, labels, masks = load_session_npz(npz_path)
+    sequences, labels, masks = load_session_npz(
+        npz_path,
+        expected_feature_names=expected_feature_names,
+        expected_session_len=expected_session_len,
+    )
 
     # Filter by min_flows
     real_flow_counts = masks.sum(axis=1)
@@ -639,13 +645,20 @@ def create_session_splits(
     val_fraction: float = 0.15,
     test_fraction: float = 0.15,
     random_seed: int = 42,
+    expected_feature_names: Sequence[str] | None = None,
+    expected_session_len: int | None = None,
 ) -> SessionSplits:
     """Load, filter, and split sessions from an NPZ file.
 
     This is the v1 function preserved for backward compatibility.
     Uses random stratified splitting (v1 default behavior).
     """
-    sequences, labels, masks = load_filtered_sessions(npz_path, min_flows)
+    sequences, labels, masks = load_filtered_sessions(
+        npz_path,
+        min_flows,
+        expected_feature_names=expected_feature_names,
+        expected_session_len=expected_session_len,
+    )
 
     indices = np.arange(len(labels))
 

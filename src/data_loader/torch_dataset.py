@@ -31,13 +31,20 @@ def create_dataloaders(
     min_flows: int = 5,
     normalize: bool = True,
     transform_config: FeatureTransformConfig | None = None,
+    expected_feature_names: tuple[str, ...] | None = None,
+    expected_session_len: int | None = None,
 ):
     """
     Loads the NPZ, applies the min_flows filter, splits the data, 
     and returns PyTorch DataLoaders.
     """
     print(f"[INFO] Loading PyTorch Dataset from {npz_path}...")
-    splits = create_session_splits(npz_path, min_flows=min_flows)
+    splits = create_session_splits(
+        npz_path,
+        min_flows=min_flows,
+        expected_feature_names=expected_feature_names,
+        expected_session_len=expected_session_len,
+    )
     print(f"[INFO] Total valid sessions (>= {min_flows} flows): {len(splits.y_train) + len(splits.y_val) + len(splits.y_test)}")
 
     if transform_config is None:
