@@ -7,10 +7,14 @@ Handles PyTorch device allocation, training/validation loops, early stopping,
 dynamic threshold tuning (to prevent data leaks), and final blind test evaluation.
 """
 
+from __future__ import annotations
+
+import argparse
 import os
+
+import numpy as np
 import torch
 import torch.optim as optim
-import numpy as np
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, roc_auc_score
 
 # Import our custom architecture and dataloader
@@ -20,6 +24,12 @@ from src.data_loader.torch_dataset import create_dataloaders
 from src.evaluation.operating_point import find_threshold_under_fpr_budget, is_better_operating_point
 from src.losses.focal_loss import FocalLoss
 from src.features.feature_config import FEATURE_DIM, FOCAL_ALPHA, FOCAL_GAMMA, MAX_FPR_BUDGET, SESSION_LEN
+
+
+def _parse_feature_list(raw_value: str | None) -> tuple[str, ...]:
+    if not raw_value:
+        return ()
+    return tuple(feature.strip() for feature in raw_value.split(",") if feature.strip())
 
 def train_model(
     npz_path: str = "data/processed/ctu13_c2_sessions.npz",
@@ -32,10 +42,12 @@ def train_model(
     focal_alpha: float = FOCAL_ALPHA,
     focal_gamma: float = FOCAL_GAMMA,
     max_fpr_budget: float = MAX_FPR_BUDGET,
+    fpr_guard_band: float = 1.0,
     use_derivative_features: bool = False,
     normalize_features: bool = True,
     log_scale_features: tuple[str, ...] | None = None,
     ablate_features: tuple[str, ...] = (),
+    run_final_test_eval: bool = True,
 ):
     os.makedirs(model_save_dir, exist_ok=True)
     best_model_path = os.path.join(model_save_dir, "best_transformer.pth")
@@ -65,12 +77,16 @@ def train_model(
     criterion = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-3)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=4)
+    effective_fpr_budget = max_fpr_budget * fpr_guard_band
 
     print(f"[INFO] Loss: FocalLoss(alpha={focal_alpha}, gamma={focal_gamma})")
     print(f"[INFO] Derivative feature augmentation: {use_derivative_features}")
     print(f"[INFO] Feature normalization: {normalize_features}")
     print(f"[INFO] Feature ablations: {list(transform_config.ablate_features)}")
-    print(f"[INFO] Validation threshold policy: max Recall under FPR <= {max_fpr_budget:.4f}")
+    print(
+        f"[INFO] Validation threshold policy: max Recall under FPR <= {effective_fpr_budget:.4f} "
+        f"(external budget {max_fpr_budget:.4f}, guard band {fpr_guard_band:.3f})"
+    )
 
     best_val_recall_budget = 0.0
     best_val_f1 = 0.0
@@ -130,7 +146,7 @@ def train_model(
             
         # Validation operating point: maximize recall under an explicit FPR budget.
         epoch_thresh, val_recall_budget, val_fpr_budget, has_feasible = find_threshold_under_fpr_budget(
-            val_targets, val_probs, max_fpr=max_fpr_budget
+            val_targets, val_probs, max_fpr=effective_fpr_budget
         )
         val_preds = (val_probs >= epoch_thresh).astype(int)
         val_f1 = f1_score(val_targets, val_preds, zero_division=0)
@@ -165,6 +181,8 @@ def train_model(
                 'model_state_dict': model.state_dict(),
                 'optimal_threshold': best_val_threshold,
                 'max_fpr_budget': max_fpr_budget,
+                'validation_fpr_budget': effective_fpr_budget,
+                'fpr_guard_band': fpr_guard_band,
                 'val_recall_budget': val_recall_budget,
                 'val_fpr_budget': val_fpr_budget,
                 'val_f1_at_budget': val_f1,
@@ -185,72 +203,101 @@ def train_model(
                 print(f"\n[INFO] Early stopping triggered after {epoch+1} epochs.")
                 break
 
-    # --- FINAL EVALUATION ON TEST SET ---
-    print("\n" + "="*60)
-    print("LOADING BEST MODEL FOR FINAL BLIND TEST EVALUATION")
-    print("="*60)
-    
-    # Load state dict and optimal threshold
-    checkpoint = torch.load(best_model_path, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    blind_threshold = checkpoint['optimal_threshold']
-    saved_fpr_budget = checkpoint.get('max_fpr_budget', max_fpr_budget)
-    
-    model.eval()
-    test_probs, test_targets = [], []
-    
-    with torch.no_grad():
-        for batch_x, batch_mask, batch_y in test_loader:
-            batch_x, batch_mask, batch_y = batch_x.to(device), batch_mask.to(device), batch_y.to(device)
-            logits = model(batch_x, batch_mask)
-            probs = torch.sigmoid(logits)
-            
-            test_probs.extend(probs.cpu().numpy())
-            test_targets.extend(batch_y.cpu().numpy())
-            
-    test_probs = np.array(test_probs)
-    test_targets = np.array(test_targets)
-    
-    # BLIND PREDICTION (Using the Validation Threshold)
-    final_preds = (test_probs >= blind_threshold).astype(int)
-    
-    try:
-        test_auc = roc_auc_score(test_targets, test_probs)
-    except ValueError:
-        test_auc = 0.0
+    if run_final_test_eval:
+        # --- FINAL EVALUATION ON TEST SET ---
+        print("\n" + "="*60)
+        print("LOADING BEST MODEL FOR FINAL BLIND TEST EVALUATION")
+        print("="*60)
         
-    final_f1 = f1_score(test_targets, final_preds, zero_division=0)
-    
-    print(f"Blind Validation Threshold : {blind_threshold:.4f}")
-    print(f"FPR Budget                : {saved_fpr_budget:.4f}")
-    print(f"Final Test AUC             : {test_auc:.4f}")
-    print(f"Final Test F1              : {final_f1:.4f}\n")
-    
-    print("Classification Report:")
-    print(classification_report(test_targets, final_preds, target_names=["Benign", "C2"], zero_division=0))
-    
-    cm = confusion_matrix(test_targets, final_preds)
-    tn, fp, fn, tp = cm.ravel()
-    fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
-    tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    budget_ok = fpr <= (saved_fpr_budget + 1e-12)
-    
-    print("\nConfusion Matrix:")
-    print(f"            Predicted Benign  Predicted C2")
-    print(f" True Benign      {tn:>8,}      {fp:>8,}    (FPR: {fpr:.4f})")
-    print(f" True C2          {fn:>8,}      {tp:>8,}    (TPR: {tpr:.4f})")
-    print(f"FPR budget met           : {budget_ok}")
+        # Load state dict and optimal threshold
+        checkpoint = torch.load(best_model_path, weights_only=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        blind_threshold = checkpoint['optimal_threshold']
+        saved_fpr_budget = checkpoint.get('max_fpr_budget', max_fpr_budget)
+        
+        model.eval()
+        test_probs, test_targets = [], []
+        
+        with torch.no_grad():
+            for batch_x, batch_mask, batch_y in test_loader:
+                batch_x, batch_mask, batch_y = batch_x.to(device), batch_mask.to(device), batch_y.to(device)
+                logits = model(batch_x, batch_mask)
+                probs = torch.sigmoid(logits)
+                
+                test_probs.extend(probs.cpu().numpy())
+                test_targets.extend(batch_y.cpu().numpy())
+                
+        test_probs = np.array(test_probs)
+        test_targets = np.array(test_targets)
+        
+        # BLIND PREDICTION (Using the Validation Threshold)
+        final_preds = (test_probs >= blind_threshold).astype(int)
+        
+        try:
+            test_auc = roc_auc_score(test_targets, test_probs)
+        except ValueError:
+            test_auc = 0.0
+            
+        final_f1 = f1_score(test_targets, final_preds, zero_division=0)
+        
+        print(f"Blind Validation Threshold : {blind_threshold:.4f}")
+        print(f"FPR Budget                : {saved_fpr_budget:.4f}")
+        print(f"Final Test AUC             : {test_auc:.4f}")
+        print(f"Final Test F1              : {final_f1:.4f}\n")
+        
+        print("Classification Report:")
+        print(classification_report(test_targets, final_preds, target_names=["Benign", "C2"], zero_division=0))
+        
+        cm = confusion_matrix(test_targets, final_preds)
+        tn, fp, fn, tp = cm.ravel()
+        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+        tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        budget_ok = fpr <= (saved_fpr_budget + 1e-12)
+        
+        print("\nConfusion Matrix:")
+        print(f"            Predicted Benign  Predicted C2")
+        print(f" True Benign      {tn:>8,}      {fp:>8,}    (FPR: {fpr:.4f})")
+        print(f" True C2          {fn:>8,}      {tp:>8,}    (TPR: {tpr:.4f})")
+        print(f"FPR budget met           : {budget_ok}")
+
+    return best_model_path
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train the CyberShield Transformer")
+    parser.add_argument("--npz_path", default="data/processed/ctu13_c2_sessions.npz")
+    parser.add_argument("--model_save_dir", default="experiments/transformer")
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--patience", type=int, default=8)
+    parser.add_argument("--min_flows", type=int, default=5)
+    parser.add_argument("--focal_alpha", type=float, default=FOCAL_ALPHA)
+    parser.add_argument("--focal_gamma", type=float, default=FOCAL_GAMMA)
+    parser.add_argument("--max_fpr_budget", type=float, default=MAX_FPR_BUDGET)
+    parser.add_argument("--guard_band", type=float, default=1.0)
+    parser.add_argument("--use_derivative_features", action="store_true")
+    normalize_group = parser.add_mutually_exclusive_group()
+    normalize_group.add_argument("--normalize_features", dest="normalize_features", action="store_true")
+    normalize_group.add_argument("--no_normalize_features", dest="normalize_features", action="store_false")
+    parser.set_defaults(normalize_features=True)
+    parser.add_argument("--log_scale_features", default=None, help="Comma-separated feature names to log-scale")
+    parser.add_argument("--ablate_features", default="", help="Comma-separated feature names to zero out")
+    args = parser.parse_args()
+
     train_model(
-        npz_path="data/processed/ctu13_c2_sessions.npz",
-        model_save_dir="experiments/transformer",
-        batch_size=64,
-        epochs=50,
-        lr=1e-4,     
-        patience=8,  
-        min_flows=5,
-        focal_alpha=FOCAL_ALPHA,
-        focal_gamma=FOCAL_GAMMA,
-        max_fpr_budget=MAX_FPR_BUDGET,
+        npz_path=args.npz_path,
+        model_save_dir=args.model_save_dir,
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        lr=args.lr,
+        patience=args.patience,
+        min_flows=args.min_flows,
+        focal_alpha=args.focal_alpha,
+        focal_gamma=args.focal_gamma,
+        max_fpr_budget=args.max_fpr_budget,
+        fpr_guard_band=args.guard_band,
+        use_derivative_features=args.use_derivative_features,
+        normalize_features=args.normalize_features,
+        log_scale_features=_parse_feature_list(args.log_scale_features),
+        ablate_features=_parse_feature_list(args.ablate_features),
     )
