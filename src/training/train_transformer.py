@@ -18,9 +18,11 @@ import torch.optim as optim
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, roc_auc_score
 
 # Import our custom architecture and dataloader
-from src.data_loader.feature_transforms import FeatureTransformConfig
+from src.data_loader.feature_transforms import FeatureTransformConfig, apply_feature_transforms
+from src.data_loader.npz_utils import load_session_npz
+from src.data_loader.normalization import fit_feature_normalizer
+from src.data_loader.torch_dataset import create_dataloaders, C2SessionDataset
 from src.models.transformer import C2Transformer
-from src.data_loader.torch_dataset import create_dataloaders
 from src.evaluation.operating_point import find_threshold_under_fpr_budget, is_better_operating_point
 from src.losses.focal_loss import FocalLoss
 from src.features.feature_config import FEATURE_DIM, FOCAL_ALPHA, FOCAL_GAMMA, MAX_FPR_BUDGET, SESSION_LEN
@@ -48,6 +50,7 @@ def train_model(
     log_scale_features: tuple[str, ...] | None = None,
     ablate_features: tuple[str, ...] = (),
     run_final_test_eval: bool = True,
+    val_npz_path: str | None = None,
 ):
     os.makedirs(model_save_dir, exist_ok=True)
     best_model_path = os.path.join(model_save_dir, "best_transformer.pth")
@@ -60,14 +63,37 @@ def train_model(
         ablate_features=tuple(ablate_features),
     )
 
-    # Data loaders are intentionally built with natural class priors.
-    train_loader, val_loader, test_loader, normalizer, transform_config = create_dataloaders(
-        npz_path,
-        batch_size,
-        min_flows,
-        normalize=normalize_features,
-        transform_config=transform_config,
-    )
+    # Data loaders: use separate val NPZ if provided (for v2 splits), else internal split
+    if val_npz_path:
+        print(f"[INFO] Loading train/val from separate NPZs (v2 mode)...")
+        train_seq, train_labels, train_masks = load_session_npz(npz_path)
+        val_seq, val_labels, val_masks = load_session_npz(val_npz_path)
+        
+        train_seq = apply_feature_transforms(train_seq, train_masks, transform_config)
+        val_seq = apply_feature_transforms(val_seq, val_masks, transform_config)
+        
+        if normalize_features:
+            normalizer = fit_feature_normalizer(train_seq, train_masks)
+            train_seq = normalizer.transform(train_seq, train_masks)
+            val_seq = normalizer.transform(val_seq, val_masks)
+        else:
+            normalizer = None
+        
+        train_dataset = C2SessionDataset(train_seq, train_masks, train_labels)
+        val_dataset = C2SessionDataset(val_seq, val_masks, val_labels)
+        
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        test_loader = None
+    else:
+        # Data loaders are intentionally built with natural class priors (original behavior).
+        train_loader, val_loader, test_loader, normalizer, transform_config = create_dataloaders(
+            npz_path,
+            batch_size,
+            min_flows,
+            normalize=normalize_features,
+            transform_config=transform_config,
+        )
 
     model = C2Transformer(
         feature_dim=FEATURE_DIM,

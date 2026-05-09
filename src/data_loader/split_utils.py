@@ -446,7 +446,7 @@ def _zero_shot_split(
     """
     rng = np.random.default_rng(config.random_seed)
 
-    # Gather all families and sources
+    # Gather all families and sources.
     family_to_indices: Dict[str, List[int]] = defaultdict(list)
     source_to_indices: Dict[str, List[int]] = defaultdict(list)
 
@@ -456,45 +456,59 @@ def _zero_shot_split(
         source_to_indices[meta.source.value].append(i)
 
     families = sorted(family_to_indices.keys())
+    sources = sorted(source_to_indices.keys())
 
-    # Determine zero-shot families
+    # Determine zero-shot families.
     if config.zero_shot_families:
         zs_families = config.zero_shot_families & set(families)
     else:
-        # Hold out ~30% of families for zero-shot
+        # Hold out ~30% of families for zero-shot.
         n_zs = max(1, int(len(families) * 0.3))
         shuffled = list(families)
         rng.shuffle(shuffled)
         zs_families = set(shuffled[:n_zs])
 
-    # Build test set: zero-shot C2 families + proportional benign
-    test_c2_idx = []
+    # Determine zero-shot sources.
+    if config.zero_shot_sources:
+        zs_sources = config.zero_shot_sources & set(sources)
+    else:
+        zs_sources = set()
+
+    # Build test set: whole held-out sources plus zero-shot families.
+    test_idx_set: Set[int] = set()
+    for source in zs_sources:
+        test_idx_set.update(source_to_indices[source])
     for family in zs_families:
-        test_c2_idx.extend(family_to_indices[family])
+        test_idx_set.update(family_to_indices[family])
 
     benign_idx = np.where(labels == LABEL_BENIGN)[0]
-    benign_test_size = max(1, int(len(benign_idx) * config.test_fraction))
-    benign_shuffled = rng.permutation(benign_idx)
-    benign_test_idx = benign_shuffled[:benign_test_size]
-    benign_trainval_idx = benign_shuffled[benign_test_size:]
+    remaining_benign_idx = np.array([i for i in benign_idx if i not in test_idx_set], dtype=np.int64)
 
-    test_idx = np.concatenate([
-        np.array(test_c2_idx, dtype=np.int64),
-        benign_test_idx,
-    ])
+    if len(remaining_benign_idx) > 0:
+        benign_test_size = max(1, int(len(remaining_benign_idx) * config.test_fraction))
+        benign_shuffled = rng.permutation(remaining_benign_idx)
+        benign_test_idx = benign_shuffled[:benign_test_size]
+        benign_trainval_idx = benign_shuffled[benign_test_size:]
+    else:
+        benign_test_idx = np.empty((0,), dtype=np.int64)
+        benign_trainval_idx = np.empty((0,), dtype=np.int64)
 
-    # Train+val: remaining C2 families + remaining benign
+    test_idx = np.array(sorted(test_idx_set | set(benign_test_idx.tolist())), dtype=np.int64)
+
+    # Train+val: remaining C2 families + remaining benign, excluding held-out sources.
     train_c2_idx = []
     train_families = set()
     for family in families:
         if family not in zs_families:
-            train_c2_idx.extend(family_to_indices[family])
+            train_c2_idx.extend(i for i in family_to_indices[family] if i not in test_idx_set)
             train_families.add(family)
 
-    trainval_idx = np.concatenate([
-        np.array(train_c2_idx, dtype=np.int64),
-        benign_trainval_idx,
-    ])
+    trainval_idx = np.array(train_c2_idx + benign_trainval_idx.tolist(), dtype=np.int64)
+
+    if len(trainval_idx) == 0:
+        raise ValueError(
+            "Zero-shot split left no training samples. Check held-out families/sources and source balance."
+        )
 
     # Split train vs val
     trainval_labels = labels[trainval_idx]

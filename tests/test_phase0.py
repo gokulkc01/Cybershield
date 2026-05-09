@@ -514,6 +514,22 @@ class TestSplitStrategies:
         overlap = train_c2_families & test_c2_families
         assert len(overlap) == 0, f"Zero-shot family overlap: {overlap}"
 
+    def test_zero_shot_sources(self):
+        labels, metadata = _make_labeled_dataset(
+            sources=[DatasetSource.CTU13, DatasetSource.UWF_ZEEKDATA24, DatasetSource.MCFP_STRATOSPHERE]
+        )
+        config = SplitConfig(
+            strategy=SplitStrategy.ZERO_SHOT,
+            zero_shot_sources={DatasetSource.CTU13.value, DatasetSource.MCFP_STRATOSPHERE.value},
+        )
+        result = split_dataset(labels, metadata, config)
+
+        assert result.validate_no_leakage()
+        assert DatasetSource.CTU13.value in result.test_sources
+        assert DatasetSource.MCFP_STRATOSPHERE.value in result.test_sources
+        assert DatasetSource.CTU13.value not in result.train_sources
+        assert DatasetSource.MCFP_STRATOSPHERE.value not in result.train_sources
+
     def test_no_metadata_fallback(self):
         """Without metadata, should fall back to random stratified."""
         labels = np.array([0]*100 + [1]*50, dtype=np.int64)

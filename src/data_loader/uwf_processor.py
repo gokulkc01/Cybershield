@@ -28,25 +28,29 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import glob
+import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 
-from src.features.feature_config_v2 import (
-    C2_POSITIVE_LABELS,
-    DatasetSource,
-    FEATURE_NAMES,
-    LABEL_BENIGN,
-    LABEL_C2,
-    SessionMetadata,
+from src.data_loader.normalized_telemetry import (
+    NORMALIZED_SCHEMA_COLUMNS,
+    SessionArtifact,
+    artifacts_to_arrays,
+    build_session_artifacts,
+    describe_pipeline,
+    infer_label_and_family_from_path,
+    infer_family_from_path,
+    infer_source_dataset,
+    load_and_normalize_telemetry,
+    write_host_map_json,
+    write_labels_csv,
 )
-from src.features.session_builder import build_sessions, save_sessions
-from src.features.zeek_parser import process_conn_log
+from src.features.feature_config_v2 import DatasetSource, LABEL_BENIGN, LABEL_C2
+from src.features.session_builder import save_sessions
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -164,150 +168,238 @@ def _infer_c2_family(path_str: str) -> str:
 # Processing
 # ──────────────────────────────────────────────────────────────────────
 
+
+SUPPORTED_INGESTION_SUFFIXES = {".parquet", ".pq", ".csv", ".tsv", ".jsonl", ".ndjson", ".log"}
+SUPPLEMENTARY_LOG_NAMES = {"dns.log", "ssl.log"}
+
+
+def _is_flow_like_file(path: Path) -> bool:
+    """Return True for files that look like flow/session telemetry."""
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+    if suffix not in SUPPORTED_INGESTION_SUFFIXES:
+        return False
+    if name == "conn.log":
+        return True
+    if suffix in {".csv", ".tsv", ".jsonl", ".ndjson", ".parquet", ".pq"}:
+        return True
+    if suffix == ".log" and any(token in name for token in ("conn", "flow", "session", "traffic")):
+        return True
+    return False
+
+
+def discover_raw_inputs(data_dir: str) -> Dict[str, List[str]]:
+    """Discover flow-like telemetry files and supplementary Zeek logs."""
+    data_path = Path(data_dir)
+    if not data_path.exists():
+        raise FileNotFoundError(f"UWF data directory not found: {data_dir}")
+
+    candidate_files: List[str] = []
+    supplementary_logs: List[str] = []
+
+    for path in sorted(data_path.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name.lower() in SUPPLEMENTARY_LOG_NAMES:
+            supplementary_logs.append(str(path))
+            continue
+        if _is_flow_like_file(path):
+            candidate_files.append(str(path))
+
+    print(
+        f"[INFO] Discovered {len(candidate_files)} flow-like raw inputs and "
+        f"{len(supplementary_logs)} supplementary logs"
+    )
+    return {"candidates": candidate_files, "supplementary": supplementary_logs}
+
+
+def _write_schema_manifest(output_dir: str) -> str:
+    manifest = {
+        "schema_name": "CyberShield Unified Telemetry Schema",
+        "description": (
+            "Canonical telemetry schema used to normalize raw telemetry before "
+            "host-centric sessionization."
+        ),
+        "pipeline": describe_pipeline(),
+        "columns": list(NORMALIZED_SCHEMA_COLUMNS),
+        "notes": [
+            "timestamp is canonical; ts is a compatibility alias",
+            "host_id is source-IP centric for longitudinal modeling",
+            "labels.csv records session-level provenance and joins",
+            "host_map.json summarizes host continuity and role continuity",
+        ],
+    }
+    path = os.path.join(output_dir, "normalized_schema.json")
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2)
+    return path
+
 def process_uwf_conn_log(
     file_path: str,
     label: int,
     capture_id: str = "",
 ) -> pd.DataFrame:
-    """Process a single UWF conn.log into a standardized flow DataFrame.
-
-    Parameters
-    ----------
-    file_path : Path to conn.log file.
-    label : LABEL_C2 or LABEL_BENIGN.
-    capture_id : Identifier for this specific capture.
-
-    Returns
-    -------
-    DataFrame with columns: ts, src_ip, dst_ip, proto, <FEATURE_NAMES>, label
-    """
+    """Backward-compatible wrapper that now uses the flexible normalizer."""
     try:
-        df = process_conn_log(file_path, return_metadata=True)
-    except Exception as e:
-        print(f"[ERROR] Failed to parse {file_path}: {e}")
+        df = load_and_normalize_telemetry(
+            file_path,
+            source_dataset=DatasetSource.UWF_ZEEKDATA24.value,
+            label=label,
+            family=infer_family_from_path(file_path) if label == 1 else "",
+            capture_id=capture_id,
+        )
+    except Exception as exc:
+        print(f"[ERROR] Failed to normalize {file_path}: {exc}")
         return pd.DataFrame()
-
-    if df.empty:
-        return df
-
-    # Add label column
-    df["label"] = label
-
-    # Add source tracking columns
-    df["_source"] = DatasetSource.UWF_ZEEKDATA24.value
-    df["_capture_id"] = capture_id
-
     return df
 
 
 def build_uwf_sessions(
     data_dir: str,
     output_dir: str,
-    min_flows: int = 3,
+    min_flows: int = 1,
     inactivity_timeout: float = 300.0,
     max_benign_files: Optional[int] = None,
     max_c2_files: Optional[int] = None,
 ) -> Dict[str, str]:
-    """Build session NPZ files from UWF-ZeekData24 dataset.
+    """Build session NPZ files plus metadata sidecars from UWF-ZeekData24.
 
-    Parameters
-    ----------
-    data_dir : Root directory of UWF-ZeekData24 dataset.
-    output_dir : Directory to write output NPZ files.
-    min_flows : Minimum flows per session.
-    inactivity_timeout : Seconds of inactivity for session boundary.
-    max_benign_files : Cap on number of benign files to process (None = all).
-    max_c2_files : Cap on number of C2 files to process (None = all).
-
-    Returns
-    -------
-    Dict mapping output type to file path.
+    Outputs:
+    - uwf_c2_sessions.npz
+    - uwf_benign_sessions.npz
+    - uwf_combined_sessions.npz (if both classes exist)
+    - labels.csv
+    - host_map.json
+    - normalized_schema.json
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # Discover files
-    discovered = discover_conn_logs(data_dir)
-    c2_files = discovered["c2"]
-    benign_files = discovered["benign"]
+    discovered = discover_raw_inputs(data_dir)
+    raw_files = discovered["candidates"]
+    if not raw_files:
+        raise ValueError(f"No supported raw telemetry files found in {data_dir}")
+
+    c2_files: List[str] = []
+    benign_files: List[str] = []
+    for file_path in raw_files:
+        label, _family = infer_label_and_family_from_path(file_path)
+        if label == LABEL_C2:
+            c2_files.append(file_path)
+        else:
+            benign_files.append(file_path)
 
     if max_c2_files is not None:
         c2_files = c2_files[:max_c2_files]
     if max_benign_files is not None:
         benign_files = benign_files[:max_benign_files]
 
-    outputs = {}
+    outputs: Dict[str, str] = {}
+    all_artifacts: List[SessionArtifact] = []
+    host_map: Dict[str, Dict] = {}
 
-    # --- Process C2 traffic ---
-    if c2_files:
-        print(f"\n[PHASE] Processing {len(c2_files)} C2 conn.log files...")
-        c2_dfs = []
-        for path in tqdm(c2_files, desc="C2 files"):
-            capture_id = _capture_id_from_path(path, data_dir)
-            df = process_uwf_conn_log(path, LABEL_C2, capture_id=capture_id)
-            if not df.empty:
-                c2_dfs.append(df)
+    def _merge_host_map(target: Dict[str, Dict], source: Dict[str, Dict]) -> None:
+        for host_id, payload in source.items():
+            if host_id not in target:
+                target[host_id] = payload
+                continue
+            merged = target[host_id]
+            merged["source_datasets"] = sorted(set(merged.get("source_datasets", [])) | set(payload.get("source_datasets", [])))
+            merged["source_paths"] = sorted(set(merged.get("source_paths", [])) | set(payload.get("source_paths", [])))
+            merged["captures"] = sorted(set(merged.get("captures", [])) | set(payload.get("captures", [])))
+            merged["labels"] = sorted(set(merged.get("labels", [])) | set(payload.get("labels", [])))
+            merged["families"] = sorted(set(merged.get("families", [])) | set(payload.get("families", [])))
+            merged["roles"] = sorted(set(merged.get("roles", [])) | set(payload.get("roles", [])))
+            merged["session_count"] = int(merged.get("session_count", 0)) + int(payload.get("session_count", 0))
+            merged["first_seen_ts"] = min(float(merged.get("first_seen_ts", 0.0)), float(payload.get("first_seen_ts", 0.0)))
+            merged["last_seen_ts"] = max(float(merged.get("last_seen_ts", 0.0)), float(payload.get("last_seen_ts", 0.0)))
 
-        if c2_dfs:
-            c2_combined = pd.concat(c2_dfs, ignore_index=True)
-            print(f"[INFO] Combined C2 flows: {len(c2_combined):,}")
+    def _process_group(paths: Sequence[str], group_name: str) -> List[SessionArtifact]:
+        group_artifacts: List[SessionArtifact] = []
+        if not paths:
+            return group_artifacts
 
-            c2_sessions, c2_labels, c2_masks = build_sessions(
-                c2_combined,
+        print(f"\n[PHASE] Processing {len(paths)} {group_name} files...")
+        for path in paths:
+            try:
+                normalized = load_and_normalize_telemetry(
+                    path,
+                    source_dataset=DatasetSource.UWF_ZEEKDATA24.value,
+                    label=None,
+                    family="",
+                    capture_id=_capture_id_from_path(path, data_dir),
+                )
+            except Exception as exc:
+                print(f"[ERROR] Skipping {path}: {exc}")
+                continue
+
+            artifacts, local_host_map = build_session_artifacts(
+                normalized,
                 label_col="label",
                 inactivity_timeout=inactivity_timeout,
                 min_flows=min_flows,
             )
+            if not artifacts:
+                print(f"[WARN] No sessions produced for {path}")
+                continue
 
-            c2_path = os.path.join(output_dir, "uwf_c2_sessions.npz")
-            save_sessions(c2_sessions, c2_labels, c2_masks, c2_path)
-            outputs["c2"] = c2_path
+            group_artifacts.extend(artifacts)
+            _merge_host_map(host_map, {host_id: entry.to_dict() for host_id, entry in local_host_map.items()})
 
-    # --- Process benign traffic ---
-    if benign_files:
-        print(f"\n[PHASE] Processing {len(benign_files)} benign conn.log files...")
-        benign_dfs = []
-        for path in tqdm(benign_files, desc="Benign files"):
-            capture_id = _capture_id_from_path(path, data_dir)
-            df = process_uwf_conn_log(path, LABEL_BENIGN, capture_id=capture_id)
-            if not df.empty:
-                benign_dfs.append(df)
-
-        if benign_dfs:
-            benign_combined = pd.concat(benign_dfs, ignore_index=True)
-            print(f"[INFO] Combined benign flows: {len(benign_combined):,}")
-
-            b_sessions, b_labels, b_masks = build_sessions(
-                benign_combined,
-                label_col="label",
-                inactivity_timeout=inactivity_timeout,
-                min_flows=min_flows,
+            label_name = "C2" if group_name == "C2" else "benign"
+            family_name = infer_family_from_path(path) if group_name == "C2" else "n/a"
+            print(
+                f"[INFO] {Path(path).name}: sessions={len(artifacts):,}, "
+                f"label={label_name}, family={family_name}, source={infer_source_dataset(path)}"
             )
 
-            benign_path = os.path.join(output_dir, "uwf_benign_sessions.npz")
-            save_sessions(b_sessions, b_labels, b_masks, benign_path)
-            outputs["benign"] = benign_path
+        return group_artifacts
 
-    # --- Combined output ---
-    if "c2" in outputs and "benign" in outputs:
-        from src.features.session_builder import load_sessions
+    c2_artifacts = _process_group(c2_files, "C2")
+    benign_artifacts = _process_group(benign_files, "benign")
+    all_artifacts.extend(c2_artifacts)
+    all_artifacts.extend(benign_artifacts)
 
-        c2_s, c2_l, c2_m = load_sessions(outputs["c2"])
-        b_s, b_l, b_m = load_sessions(outputs["benign"])
+    if not all_artifacts:
+        raise ValueError("No sessions were produced. Check the raw inputs and min_flows setting.")
 
-        X = np.concatenate([c2_s, b_s], axis=0)
-        y = np.concatenate([c2_l, b_l], axis=0)
-        masks = np.concatenate([c2_m, b_m], axis=0)
+    def _save_group(artifacts: List[SessionArtifact], file_name: str) -> Optional[str]:
+        if not artifacts:
+            return None
+        sessions, labels, masks = artifacts_to_arrays(artifacts)
+        out_path = os.path.join(output_dir, file_name)
+        save_sessions(sessions, labels, masks, out_path)
+        return out_path
 
-        # Shuffle
+    c2_path = _save_group(c2_artifacts, "uwf_c2_sessions.npz")
+    if c2_path:
+        outputs["c2"] = c2_path
+
+    benign_path = _save_group(benign_artifacts, "uwf_benign_sessions.npz")
+    if benign_path:
+        outputs["benign"] = benign_path
+
+    if c2_artifacts and benign_artifacts:
+        combined_artifacts = c2_artifacts + benign_artifacts
         rng = np.random.default_rng(42)
-        idx = rng.permutation(len(y))
-        X, y, masks = X[idx], y[idx], masks[idx]
+        order = rng.permutation(len(combined_artifacts))
+        combined_artifacts = [combined_artifacts[i] for i in order]
+        combined_path = _save_group(combined_artifacts, "uwf_combined_sessions.npz")
+        if combined_path:
+            outputs["combined"] = combined_path
 
-        combined_path = os.path.join(output_dir, "uwf_combined_sessions.npz")
-        save_sessions(X, y, masks, combined_path)
-        outputs["combined"] = combined_path
+    labels_csv_path = os.path.join(output_dir, "labels.csv")
+    write_labels_csv(all_artifacts, labels_csv_path)
+    outputs["labels_csv"] = labels_csv_path
 
-    print(f"\n[SUCCESS] UWF processing complete. Outputs: {outputs}")
+    host_map_path = os.path.join(output_dir, "host_map.json")
+    write_host_map_json(host_map, host_map_path)
+    outputs["host_map"] = host_map_path
+
+    schema_path = _write_schema_manifest(output_dir)
+    outputs["schema_manifest"] = schema_path
+
+    print(f"\n[INFO] Pipeline sketch: {describe_pipeline()}")
+    print(f"[SUCCESS] UWF processing complete. Outputs: {outputs}")
     return outputs
 
 
@@ -358,7 +450,7 @@ def main() -> None:
         default="data/processed/uwf",
         help="Output directory for session NPZ files",
     )
-    parser.add_argument("--min_flows", type=int, default=3)
+    parser.add_argument("--min_flows", type=int, default=1)
     parser.add_argument("--inactivity_timeout", type=float, default=300.0)
     parser.add_argument(
         "--max_benign_files", type=int, default=None,

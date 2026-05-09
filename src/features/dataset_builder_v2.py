@@ -389,6 +389,7 @@ def build_v2_dataset(
     random_seed: int = 42,
     c2_ratio: Optional[float] = None,
     held_out_families: Optional[str] = None,
+    held_out_sources: Optional[str] = None,
     build_timelines: bool = True,
     timeline_config: Optional[HostTimelineConfig] = None,
 ) -> Dict[str, str]:
@@ -435,6 +436,8 @@ def build_v2_dataset(
     )
     if held_out_families:
         config.held_out_families = set(held_out_families.split(","))
+    if held_out_sources:
+        config.zero_shot_sources = set(held_out_sources.split(","))
 
     split_result = split_dataset(labels, metadata, config)
     print_split_report(split_result, labels)
@@ -563,6 +566,10 @@ if __name__ == "__main__":
         help="Comma-separated C2 families to hold out for test",
     )
     parser.add_argument(
+        "--held_out_sources", default=None,
+        help="Comma-separated dataset sources to hold out for test",
+    )
+    parser.add_argument(
         "--no_timelines", action="store_true",
         help="Skip host timeline construction (session-only output)",
     )
@@ -585,6 +592,7 @@ if __name__ == "__main__":
         random_seed=args.seed,
         c2_ratio=args.c2_ratio,
         held_out_families=args.held_out_families,
+        held_out_sources=args.held_out_sources,
         build_timelines=not args.no_timelines,
         timeline_config=tl_config,
     )
