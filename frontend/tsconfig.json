@@ -1,0 +1,80 @@
+{
+    "compilerOptions": {
+        "target": "es2020",
+        "useDefineForClassFields": true,
+        "lib": [
+            "es2020",
+            "dom",
+            "dom.iterable"
+        ],
+        "module": "esnext",
+        "ignoreDeprecations": "6.0",
+        "baseUrl": ".",
+        "skipLibCheck": true,
+        "esModuleInterop": true,
+        "allowSyntheticDefaultImports": true,
+        "strict": true,
+        "forceConsistentCasingInFileNames": true,
+        "noImplicitAny": true,
+        "strictNullChecks": true,
+        "strictFunctionTypes": true,
+        "strictPropertyInitialization": true,
+        "noUnusedLocals": false,
+        "noUnusedParameters": false,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true,
+        "resolveJsonModule": true,
+        "moduleResolution": "bundler",
+        "allowImportingTsExtensions": true,
+        "noEmit": true,
+        "jsx": "preserve",
+        "jsxImportSource": "react",
+        "paths": {
+            "@/*": [
+                "./*"
+            ],
+            "@/components/*": [
+                "./components/*"
+            ],
+            "@/lib/*": [
+                "./lib/*"
+            ],
+            "@/styles/*": [
+                "./styles/*"
+            ],
+            "@/app/*": [
+                "./app/*"
+            ]
+        },
+        "types": [
+            "node",
+            "react",
+            "react-dom"
+        ],
+        "allowJs": true,
+        "incremental": true,
+        "isolatedModules": true,
+        "plugins": [
+            {
+                "name": "next"
+            }
+        ]
+    },
+    "include": [
+        "next-env.d.ts",
+        "**/*.ts",
+        "**/*.tsx",
+        ".next/types/**/*.ts"
+    ],
+    "exclude": [
+        "node_modules",
+        ".next",
+        "out",
+        "build",
+        "dist",
+        "**/__tests__/**",
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "jest.setup.ts"
+    ]
+}

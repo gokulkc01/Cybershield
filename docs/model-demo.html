@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CyberShield Model Demo - Real-time C2 Detection</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+            padding-top: 20px;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        }
+
+        .card h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        .upload-area {
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background-color: #f8f9ff;
+        }
+
+        .upload-area:hover {
+            border-color: #764ba2;
+            background-color: #f0f2ff;
+        }
+
+        .upload-area.dragover {
+            border-color: #764ba2;
+            background-color: #e8ecff;
+        }
+
+        .upload-icon {
+            font-size: 3em;
+            margin-bottom: 15px;
+        }
+
+        .upload-area p {
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .upload-area .file-input {
+            display: none;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            margin-top: 15px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background 0.3s ease;
+        }
+
+        .btn:hover {
+            background: #764ba2;
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #764ba2;
+            margin-left: 10px;
+        }
+
+        .btn-secondary:hover {
+            background: #667eea;
+        }
+
+        .file-info {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9ff;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .file-info.show {
+            display: block;
+        }
+
+        .file-info strong {
+            color: #667eea;
+        }
+
+        .config-section {
+            margin-bottom: 20px;
+        }
+
+        .config-section label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .config-section input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1em;
+        }
+
+        .results-section {
+            display: none;
+        }
+
+        .results-section.show {
+            display: block;
+        }
+
+        .predictions-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .predictions-table thead {
+            background: #667eea;
+            color: white;
+            position: sticky;
+            top: 0;
+        }
+
+        .predictions-table th {
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .predictions-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .predictions-table tbody tr:hover {
+            background: #f8f9ff;
+        }
+
+        .label-c2 {
+            background: #ff6b6b;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            display: inline-block;
+        }
+
+        .label-benign {
+            background: #51cf66;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            display: inline-block;
+        }
+
+        .domain-mixed {
+            background: #4dabf7;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+
+        .domain-uwf {
+            background: #ff922b;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+
+        .probability-bar {
+            background: #e0e0e0;
+            height: 20px;
+            border-radius: 4px;
+            overflow: hidden;
+            min-width: 80px;
+        }
+
+        .probability-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            transition: width 0.3s ease;
+        }
+
+        .summary {
+            background: #f8f9ff;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 6px;
+        }
+
+        .summary-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-box {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .stat-box .value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-box .label {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 8px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .error-message {
+            color: #ff6b6b;
+            background: #ffe0e0;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 15px 0;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        .success-message {
+            color: #51cf66;
+            background: #e7f5e7;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 15px 0;
+            display: none;
+        }
+
+        .success-message.show {
+            display: block;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #e0e0e0;
+            border-radius: 2px;
+            margin: 15px 0;
+            overflow: hidden;
+            display: none;
+        }
+
+        .progress-bar.show {
+            display: block;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            width: 0;
+            animation: progress 2s ease-in-out infinite;
+        }
+
+        @keyframes progress {
+            0% {
+                width: 0%;
+            }
+
+            50% {
+                width: 80%;
+            }
+
+            100% {
+                width: 100%;
+            }
+        }
+
+        .help-text {
+            font-size: 0.85em;
+            color: #999;
+            margin-top: 8px;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+
+            header h1 {
+                font-size: 1.8em;
+            }
+
+            .summary-stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            opacity: 0.8;
+            margin-top: 40px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>🛡️ CyberShield Model Demo</h1>
+            <p>Real-time C2 traffic detection using domain-adaptive transformer</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Upload Card -->
+            <div class="card">
+                <h2>📤 Upload NPZ File</h2>
+
+                <div class="config-section">
+                    <label for="api-url">API Endpoint:</label>
+                    <input type="text" id="api-url" value="http://localhost:8000" placeholder="http://localhost:8000" />
+                    <div class="help-text">
+                        FastAPI server URL (default: http://localhost:8000)
+                    </div>
+                </div>
+
+                <div class="upload-area" id="upload-area" ondrop="handleDrop(event)" ondragover="handleDragOver(event)"
+                    ondragleave="handleDragLeave(event)">
+                    <div class="upload-icon">📦</div>
+                    <p><strong>Drag and drop your NPZ file here</strong></p>
+                    <p style="font-size: 0.9em;">or click to select</p>
+                    <button class="btn" onclick="document.getElementById('file-input').click()">
+                        Browse Files
+                    </button>
+                    <input type="file" id="file-input" class="file-input" accept=".npz"
+                        onchange="handleFileSelect(event)" />
+                </div>
+
+                <div class="file-info" id="file-info">
+                    <strong>Selected File:</strong> <span id="file-name"></span><br />
+                    <strong>Size:</strong> <span id="file-size"></span>
+                    <br />
+                    <button class="btn" id="upload-btn" onclick="uploadFile()">
+                        🚀 Analyze File
+                    </button>
+                    <button class="btn btn-secondary" onclick="clearFile()">
+                        Clear
+                    </button>
+                </div>
+
+                <div class="error-message" id="error-message"></div>
+                <div class="success-message" id="success-message"></div>
+                <div class="progress-bar" id="progress-bar">
+                    <div class="progress-fill"></div>
+                </div>
+            </div>
+
+            <!-- Results Card -->
+            <div class="card">
+                <h2>📊 Prediction Results</h2>
+                <div id="results-placeholder" style="color: #999; text-align: center; padding: 40px;">
+                    No predictions yet. Upload an NPZ file to start.
+                </div>
+                <div class="results-section" id="results-section">
+                    <div class="summary" id="summary"></div>
+                    <div id="results-content"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>CyberShield © 2026 | Domain-Adaptive C2 Detection Model</p>
+        </div>
+    </div>
+
+    <script>
+        let selectedFile = null;
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            document.getElementById('upload-area').classList.add('dragover');
+        }
+
+        function handleDragLeave(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            document.getElementById('upload-area').classList.remove('dragover');
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            document.getElementById('upload-area').classList.remove('dragover');
+
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].name.endsWith('.npz')) {
+                selectedFile = files[0];
+                displayFileInfo();
+            } else {
+                showError('Please select a valid NPZ file');
+            }
+        }
+
+        function handleFileSelect(e) {
+            const files = e.target.files;
+            if (files.length > 0) {
+                selectedFile = files[0];
+                displayFileInfo();
+            }
+        }
+
+        function displayFileInfo() {
+            if (!selectedFile) return;
+
+            document.getElementById('file-name').textContent = selectedFile.name;
+            document.getElementById('file-size').textContent = (selectedFile.size / 1024 / 1024).toFixed(2) + ' MB';
+            document.getElementById('file-info').classList.add('show');
+            clearMessages();
+        }
+
+        function clearFile() {
+            selectedFile = null;
+            document.getElementById('file-input').value = '';
+            document.getElementById('file-info').classList.remove('show');
+            clearMessages();
+        }
+
+        function showError(message) {
+            const errorEl = document.getElementById('error-message');
+            errorEl.textContent = '❌ ' + message;
+            errorEl.classList.add('show');
+        }
+
+        function showSuccess(message) {
+            const successEl = document.getElementById('success-message');
+            successEl.textContent = '✅ ' + message;
+            successEl.classList.add('show');
+        }
+
+        function clearMessages() {
+            document.getElementById('error-message').classList.remove('show');
+            document.getElementById('success-message').classList.remove('show');
+        }
+
+        async function uploadFile() {
+            if (!selectedFile) {
+                showError('No file selected');
+                return;
+            }
+
+            const apiUrl = document.getElementById('api-url').value.trim();
+            if (!apiUrl) {
+                showError('Please enter API endpoint URL');
+                return;
+            }
+
+            const uploadBtn = document.getElementById('upload-btn');
+            uploadBtn.disabled = true;
+            uploadBtn.innerHTML = '<span class="loading"></span>Analyzing...';
+
+            document.getElementById('progress-bar').classList.add('show');
+            clearMessages();
+            clearResults();
+
+            try {
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+
+                const response = await fetch(`${apiUrl}/predict-file`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || `HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.predictions && data.predictions.length > 0) {
+                    displayResults(data);
+                    showSuccess(`Analysis complete! Found ${data.n_predictions} sessions.`);
+                } else {
+                    showError('No predictions returned');
+                }
+            } catch (error) {
+                showError('Upload failed: ' + error.message);
+                console.error('Error:', error);
+            } finally {
+                uploadBtn.disabled = false;
+                uploadBtn.innerHTML = '🚀 Analyze File';
+                document.getElementById('progress-bar').classList.remove('show');
+            }
+        }
+
+        function displayResults(data) {
+            const predictions = data.predictions || [];
+
+            if (predictions.length === 0) {
+                showError('No predictions to display');
+                return;
+            }
+
+            // Calculate statistics
+            const c2Count = predictions.filter(p => p.label === 1 || p.label === 'C2').length;
+            const benignCount = predictions.length - c2Count;
+            const avgProb = (predictions.reduce((sum, p) => sum + (p.probability || 0), 0) / predictions.length * 100).toFixed(1);
+
+            const domainCounts = {};
+            predictions.forEach(p => {
+                const domain = p.domain || 'unknown';
+                domainCounts[domain] = (domainCounts[domain] || 0) + 1;
+            });
+
+            // Build summary
+            let summary = `<strong>Summary:</strong><br/>`;
+            summary += `Total Sessions: <strong>${predictions.length}</strong><br/>`;
+            summary += `C2 Detections: <strong style="color: #ff6b6b;">${c2Count}</strong> | `;
+            summary += `Benign: <strong style="color: #51cf66;">${benignCount}</strong>`;
+
+            const summaryEl = document.getElementById('summary');
+            summaryEl.innerHTML = summary;
+
+            // Build statistics boxes
+            let statsHtml = '<div class="summary-stats">';
+            statsHtml += `<div class="stat-box"><div class="value">${predictions.length}</div><div class="label">Total Sessions</div></div>`;
+            statsHtml += `<div class="stat-box"><div class="value">${c2Count}</div><div class="label">C2 Detected</div></div>`;
+            statsHtml += `<div class="stat-box"><div class="value">${((c2Count / predictions.length) * 100).toFixed(1)}%</div><div class="label">Detection Rate</div></div>`;
+            statsHtml += `<div class="stat-box"><div class="value">${avgProb}%</div><div class="label">Avg Confidence</div></div>`;
+            statsHtml += '</div>';
+
+            // Build table
+            let tableHtml = '<table class="predictions-table"><thead><tr>';
+            tableHtml += '<th>Index</th><th>Domain</th><th>Label</th><th>Probability</th>';
+            tableHtml += '</tr></thead><tbody>';
+
+            predictions.slice(0, 100).forEach((pred, idx) => {
+                const label = pred.label === 1 || pred.label === 'C2' ? 'C2' : 'Benign';
+                const labelClass = label === 'C2' ? 'label-c2' : 'label-benign';
+                const domainClass = (pred.domain || '').includes('uwf') ? 'domain-uwf' : 'domain-mixed';
+                const prob = ((pred.probability || 0) * 100).toFixed(1);
+
+                tableHtml += '<tr>';
+                tableHtml += `<td>${pred.index || idx}</td>`;
+                tableHtml += `<td><span class="${domainClass}">${pred.domain || 'mixed'}</span></td>`;
+                tableHtml += `<td><span class="${labelClass}">${label}</span></td>`;
+                tableHtml += `<td>${prob}% <div class="probability-bar" style="margin-top: 5px;"><div class="probability-fill" style="width: ${prob}%"></div></div></td>`;
+                tableHtml += '</tr>';
+            });
+
+            if (predictions.length > 100) {
+                tableHtml += `<tr style="text-align: center;"><td colspan="4">... and ${predictions.length - 100} more</td></tr>`;
+            }
+
+            tableHtml += '</tbody></table>';
+
+            document.getElementById('results-content').innerHTML = statsHtml + tableHtml;
+            document.getElementById('results-placeholder').style.display = 'none';
+            document.getElementById('results-section').classList.add('show');
+        }
+
+        function clearResults() {
+            document.getElementById('results-placeholder').style.display = 'block';
+            document.getElementById('results-section').classList.remove('show');
+            document.getElementById('results-content').innerHTML = '';
+            document.getElementById('summary').innerHTML = '';
+        }
+    </script>
+</body>
+
+</html>

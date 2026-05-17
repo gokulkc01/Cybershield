@@ -14,19 +14,19 @@ Phase 3 planning was based on a **confounded experiment** (multiple variables ch
 
 ## Read These in Order
 
-### 1️⃣ **FINAL_SUMMARY.md** (5 minutes) ← START HERE
+### 1️⃣ **docs/validated/FINAL_SUMMARY.md** (5 minutes) ← START HERE
 High-level overview of what changed and why. Read this first to understand the big picture.
 
-### 2️⃣ **DIRECTION_CHANGE.md** (5 minutes)
+### 2️⃣ **docs/planned/DIRECTION_CHANGE.md** (5 minutes)
 Explains why Phase 3 was invalid and how you corrected the course.
 
 ### 3️⃣ **README_RESEARCH_DIRECTION.md** (10 minutes)
 Scientific principles, expected outcomes, and key documents.
 
-### 4️⃣ **research_plan_multifamily_generalization.md** (20 minutes)
+### 4️⃣ **docs/planned/research_plan_multifamily_generalization.md** (20 minutes)
 Full experimental design with all details. Reference during implementation.
 
-### 5️⃣ **IMMEDIATE_ACTION_PLAN.md** (10 minutes)
+### 5️⃣ **docs/planned/IMMEDIATE_ACTION_PLAN.md** (10 minutes)
 Week-by-week task breakdown. Use this to plan your work.
 
 ### 6️⃣ **PROGRESS_CHECKLIST.md** (ongoing)
@@ -102,11 +102,11 @@ Track daily progress. Print this and check off items.
 
 | Document | Purpose | When |
 |----------|---------|------|
-| [FINAL_SUMMARY.md](FINAL_SUMMARY.md) | Overview & context | Today (reading) |
-| [DIRECTION_CHANGE.md](DIRECTION_CHANGE.md) | Explain to team | Today/Tomorrow |
+| [docs/validated/FINAL_SUMMARY.md](docs/validated/FINAL_SUMMARY.md) | Overview & context | Today (reading) |
+| [docs/planned/DIRECTION_CHANGE.md](docs/planned/DIRECTION_CHANGE.md) | Explain to team | Today/Tomorrow |
 | [README_RESEARCH_DIRECTION.md](README_RESEARCH_DIRECTION.md) | Understand principles | Tomorrow |
-| [research_plan_multifamily_generalization.md](research_plan_multifamily_generalization.md) | Reference during work | Week 1+ |
-| [IMMEDIATE_ACTION_PLAN.md](IMMEDIATE_ACTION_PLAN.md) | Daily task list | Week 1 (May 13) |
+| [docs/planned/research_plan_multifamily_generalization.md](docs/planned/research_plan_multifamily_generalization.md) | Reference during work | Week 1+ |
+| [docs/planned/IMMEDIATE_ACTION_PLAN.md](docs/planned/IMMEDIATE_ACTION_PLAN.md) | Daily task list | Week 1 (May 13) |
 | [PROGRESS_CHECKLIST.md](PROGRESS_CHECKLIST.md) | Track progress | Week 1-3 |
 
 ---
@@ -131,17 +131,17 @@ Preserved for historical reference only.
 ## Your Next Actions
 
 **Right Now** (Today):
-1. Read FINAL_SUMMARY.md (this page, then that page)
-2. Read DIRECTION_CHANGE.md
+1. Read docs/validated/FINAL_SUMMARY.md (this page, then that page)
+2. Read docs/planned/DIRECTION_CHANGE.md
 3. Commit to git
 
 **Tomorrow**:
 1. Read README_RESEARCH_DIRECTION.md
 2. Create feature branch: `git checkout -b research/multifamily_generalization`
-3. Review IMMEDIATE_ACTION_PLAN.md
+3. Review docs/planned/IMMEDIATE_ACTION_PLAN.md
 
 **Week 1 (May 13)**:
-1. Follow IMMEDIATE_ACTION_PLAN.md Day 1-5
+1. Follow docs/planned/IMMEDIATE_ACTION_PLAN.md Day 1-5
 2. Load multi-family CTU-13 data
 3. Use PROGRESS_CHECKLIST.md to track
 
@@ -216,7 +216,7 @@ These are hallmarks of good research. You're on the right track.
 | **Why?** | Confounded variables, not rigorous |
 | **What's next?** | 3-week controlled experiment |
 | **What am I doing?** | Training on multi-family data, testing cross-family |
-| **What do I do today?** | Read FINAL_SUMMARY.md then DIRECTION_CHANGE.md |
+| **What do I do today?** | Read docs/validated/FINAL_SUMMARY.md then docs/planned/DIRECTION_CHANGE.md |
 | **When do I code?** | Week 1, May 13 |
 | **What's the outcome?** | Data will tell us (3 possibilities) |
 
@@ -225,33 +225,33 @@ These are hallmarks of good research. You're on the right track.
 ## Get Started
 
 **Option A**: Read sequentially (recommended)
-1. FINAL_SUMMARY.md (5 min)
-2. DIRECTION_CHANGE.md (5 min)
+1. docs/validated/FINAL_SUMMARY.md (5 min)
+2. docs/planned/DIRECTION_CHANGE.md (5 min)
 3. README_RESEARCH_DIRECTION.md (10 min)
-4. Then implement following IMMEDIATE_ACTION_PLAN.md
+4. Then implement following docs/planned/IMMEDIATE_ACTION_PLAN.md
 
 **Option B**: Quick version (if in a hurry)
 1. Read this page
-2. Read DIRECTION_CHANGE.md
-3. Start Week 1 tasks from IMMEDIATE_ACTION_PLAN.md
+2. Read docs/planned/DIRECTION_CHANGE.md
+3. Start Week 1 tasks from docs/planned/IMMEDIATE_ACTION_PLAN.md
 
 **Option C**: Deep dive (if you want full details)
 1. Read all documents above
-2. Study research_plan_multifamily_generalization.md thoroughly
+2. Study docs/planned/research_plan_multifamily_generalization.md thoroughly
 3. Then implement with full understanding
 
 ---
 
 ## Ready?
 
-✅ **Yes** → Read FINAL_SUMMARY.md next  
+✅ **Yes** → Read docs/validated/FINAL_SUMMARY.md next  
 ❓ **Questions** → Read README_RESEARCH_DIRECTION.md  
-🏃 **Urgent** → Jump to IMMEDIATE_ACTION_PLAN.md
+🏃 **Urgent** → Jump to docs/planned/IMMEDIATE_ACTION_PLAN.md
 
 ---
 
 *Navigation Hub for Research Direction Correction*  
 *Created: May 9, 2026*  
 *Status: Ready for Week 1 implementation*  
-*Next: Read FINAL_SUMMARY.md →*
+*Next: Read docs/validated/FINAL_SUMMARY.md →*
 

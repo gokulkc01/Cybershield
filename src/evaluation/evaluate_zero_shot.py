@@ -23,11 +23,16 @@ import torch
 from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 
+from src.data_loader.extended_feature_transforms import (
+    ExtendedFeatureTransformConfig,
+    apply_extended_feature_transforms,
+)
 from src.data_loader.feature_transforms import FeatureTransformConfig, apply_feature_transforms
 from src.data_loader.normalization import FeatureNormalizer
-from src.data_loader.npz_utils import load_session_npz
+from src.data_loader.npz_utils import detect_npz_schema, load_session_npz
 from src.features.dataset_builder_v2 import load_multi_source, parse_source_spec
 from src.features.feature_config import MAX_FPR_BUDGET, SESSION_LEN, FEATURE_DIM
+from src.features.feature_config_extended import FEATURE_SCHEMA_VERSION as EXTENDED_SCHEMA_VERSION
 from src.models.transformer import C2Transformer
 
 
@@ -60,6 +65,25 @@ class SessionNPZDataset(Dataset):
 
     def __getitem__(self, idx: int):
         return self.sequences[idx], self.padding_masks[idx], self.labels[idx]
+
+
+def _load_transform_config(checkpoint: dict) -> FeatureTransformConfig | ExtendedFeatureTransformConfig:
+    payload = checkpoint.get("feature_transform_config")
+    if isinstance(payload, dict) and payload.get("schema") == EXTENDED_SCHEMA_VERSION:
+        return ExtendedFeatureTransformConfig.from_checkpoint_dict(payload)
+    return FeatureTransformConfig.from_checkpoint_dict(payload)
+
+
+def _apply_transforms(
+    sequences: np.ndarray,
+    masks: np.ndarray,
+    config: FeatureTransformConfig | ExtendedFeatureTransformConfig,
+    schema_version: str,
+    feature_names: tuple[str, ...] | None,
+) -> np.ndarray:
+    if schema_version == EXTENDED_SCHEMA_VERSION:
+        return apply_extended_feature_transforms(sequences, masks, config)  # type: ignore[arg-type]
+    return apply_feature_transforms(sequences, masks, config, feature_names=feature_names)
 
 
 @torch.no_grad()
@@ -134,28 +158,28 @@ def evaluate_zero_shot(
     
     # Load features and apply transforms
     print(f"[INFO] Loading test set from {test_npz}...")
+    schema = detect_npz_schema(test_npz)
+    feature_names = tuple(schema["feature_names"]) if schema["feature_names"] else expected_feature_names
     sequences, labels, masks = load_session_npz(
         test_npz,
-        expected_feature_names=expected_feature_names,
-        expected_session_len=expected_session_len,
+        expected_feature_names=feature_names,
+        expected_session_len=int(schema["session_len"]) if schema["session_len"] else expected_session_len,
     )
     
-    transform_config = FeatureTransformConfig.from_checkpoint_dict(checkpoint.get("feature_transform_config"))
-    sequences = apply_feature_transforms(
-        sequences,
-        masks,
-        transform_config,
-        feature_names=expected_feature_names,
-    )
+    transform_config = _load_transform_config(checkpoint)
+    checkpoint_schema = str(checkpoint.get("schema_version", schema["schema_version"]))
+    sequences = _apply_transforms(sequences, masks, transform_config, checkpoint_schema, feature_names)
     
     if checkpoint.get("normalize_features", False):
         normalizer = FeatureNormalizer.from_checkpoint_dict(checkpoint.get("feature_normalizer"))
         sequences = normalizer.transform(sequences, masks)
     
     # Load model
+    model_feature_dim = int(checkpoint.get("feature_dim", schema["feature_dim"] or expected_feature_dim))
+    model_seq_len = int(checkpoint.get("session_len", schema["session_len"] or expected_session_len))
     model = C2Transformer(
-        feature_dim=expected_feature_dim,
-        seq_len=expected_session_len,
+        feature_dim=model_feature_dim,
+        seq_len=model_seq_len,
         use_derivative_features=bool(checkpoint.get("use_derivative_features", False)),
     ).to(device_obj)
     model.load_state_dict(checkpoint["model_state_dict"])

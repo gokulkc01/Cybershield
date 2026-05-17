@@ -16,6 +16,7 @@ from typing import Iterable, List, Sequence
 import numpy as np
 
 from src.data_loader.npz_utils import load_session_npz
+from src.features.feature_config import FEATURE_NAMES as BASE_FEATURE_NAMES
 from src.features.feature_config_experiment import FEATURE_NAMES
 
 
@@ -79,10 +80,37 @@ class Ctu13MultifamilyLoader:
             if not npz_path.exists():
                 raise FileNotFoundError(f"CTU-13 source not found: {npz_path}")
 
-            sessions, labels, masks = load_session_npz(
-                str(npz_path),
-                expected_feature_names=FEATURE_NAMES,
-            )
+            try:
+                sessions, labels, masks = load_session_npz(
+                    str(npz_path),
+                    expected_feature_names=FEATURE_NAMES,
+                )
+            except ValueError:
+                data = np.load(npz_path, allow_pickle=True)
+                saved_feature_names = [str(name) for name in data["feature_names"].tolist()] if "feature_names" in data else list(BASE_FEATURE_NAMES)
+                if saved_feature_names != list(BASE_FEATURE_NAMES):
+                    raise
+
+                source_index = {name: idx for idx, name in enumerate(saved_feature_names)}
+                keep_indices = [source_index[name] for name in FEATURE_NAMES]
+
+                if "X" in data:
+                    raw_sessions = data["X"].astype(np.float32)
+                elif "sessions" in data:
+                    raw_sessions = data["sessions"].astype(np.float32)
+                else:
+                    raise KeyError(f"NPZ must contain 'X' or 'sessions'. Found keys: {list(data.keys())}")
+
+                if "y" in data:
+                    labels = data["y"].astype(np.int64)
+                elif "labels" in data:
+                    labels = data["labels"].astype(np.int64)
+                else:
+                    raise KeyError(f"NPZ must contain 'y' or 'labels'. Found keys: {list(data.keys())}")
+
+                masks = data["masks"].astype(bool) if "masks" in data else np.any(raw_sessions != 0.0, axis=2)
+                sessions = raw_sessions[:, :, keep_indices].astype(np.float32)
+
             if source.label_type == "c2":
                 labels = np.ones(len(sessions), dtype=np.int64)
             elif source.label_type == "benign":

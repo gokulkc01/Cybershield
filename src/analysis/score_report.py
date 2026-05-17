@@ -10,10 +10,16 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from src.data_loader.extended_feature_transforms import (
+    ExtendedFeatureTransformConfig,
+    apply_extended_feature_transforms,
+)
 from src.data_loader.feature_transforms import FeatureTransformConfig, apply_feature_transforms
 from src.data_loader.normalization import FeatureNormalizer, fit_feature_normalizer
+from src.data_loader.npz_utils import detect_npz_schema
 from src.data_loader.split_utils import create_session_splits, load_filtered_sessions
 from src.features.feature_config import FEATURE_DIM, SESSION_LEN
+from src.features.feature_config_extended import FEATURE_SCHEMA_VERSION as EXTENDED_SCHEMA_VERSION
 from src.models.transformer import C2Transformer
 
 
@@ -48,6 +54,25 @@ class SessionDataset(Dataset):
 
     def __getitem__(self, idx: int):
         return self.sequences[idx], self.padding_masks[idx], self.labels[idx]
+
+
+def _load_transform_config(checkpoint: dict) -> FeatureTransformConfig | ExtendedFeatureTransformConfig:
+    payload = checkpoint.get("feature_transform_config")
+    if isinstance(payload, dict) and payload.get("schema") == EXTENDED_SCHEMA_VERSION:
+        return ExtendedFeatureTransformConfig.from_checkpoint_dict(payload)
+    return FeatureTransformConfig.from_checkpoint_dict(payload)
+
+
+def _apply_transforms(
+    sequences: np.ndarray,
+    masks: np.ndarray,
+    config: FeatureTransformConfig | ExtendedFeatureTransformConfig,
+    schema_version: str,
+    feature_names: tuple[str, ...] | None,
+) -> np.ndarray:
+    if schema_version == EXTENDED_SCHEMA_VERSION:
+        return apply_extended_feature_transforms(sequences, masks, config)  # type: ignore[arg-type]
+    return apply_feature_transforms(sequences, masks, config, feature_names=feature_names)
 
 
 @torch.no_grad()
@@ -101,12 +126,15 @@ def score_dataset(
     device_obj = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     checkpoint = torch.load(checkpoint_path, map_location=device_obj, weights_only=False)
     threshold = float(checkpoint["optimal_threshold"])
-    transform_config = FeatureTransformConfig.from_checkpoint_dict(checkpoint.get("feature_transform_config"))
+    transform_config = _load_transform_config(checkpoint)
+    checkpoint_schema = str(checkpoint.get("schema_version", "unknown"))
 
     if split == "holdout":
+        schema = detect_npz_schema(npz_path)
+        feature_names = tuple(schema["feature_names"]) if schema["feature_names"] else None
         splits = create_session_splits(npz_path, min_flows=min_flows)
-        x_train = apply_feature_transforms(splits.x_train, splits.m_train, transform_config)
-        sequences = apply_feature_transforms(splits.x_test, splits.m_test, transform_config)
+        x_train = _apply_transforms(splits.x_train, splits.m_train, transform_config, checkpoint_schema, feature_names)
+        sequences = _apply_transforms(splits.x_test, splits.m_test, transform_config, checkpoint_schema, feature_names)
         labels, masks = splits.y_test, splits.m_test
         if checkpoint.get("normalize_features", False):
             if checkpoint.get("feature_normalizer") is not None:
@@ -115,8 +143,15 @@ def score_dataset(
                 normalizer = fit_feature_normalizer(x_train, splits.m_train)
             sequences = normalizer.transform(sequences, masks)
     else:
-        sequences, labels, masks = load_filtered_sessions(npz_path, min_flows=min_flows)
-        sequences = apply_feature_transforms(sequences, masks, transform_config)
+        schema = detect_npz_schema(npz_path)
+        feature_names = tuple(schema["feature_names"]) if schema["feature_names"] else None
+        sequences, labels, masks = load_filtered_sessions(
+            npz_path,
+            min_flows=min_flows,
+            expected_feature_names=feature_names,
+            expected_session_len=int(schema["session_len"]) if schema["session_len"] else None,
+        )
+        sequences = _apply_transforms(sequences, masks, transform_config, checkpoint_schema, feature_names)
         if checkpoint.get("normalize_features", False):
             feature_normalizer = checkpoint.get("feature_normalizer")
             if feature_normalizer is None:
@@ -124,12 +159,15 @@ def score_dataset(
             normalizer = FeatureNormalizer.from_checkpoint_dict(feature_normalizer)
             sequences = normalizer.transform(sequences, masks)
 
+    model_feature_dim = int(checkpoint.get("feature_dim", FEATURE_DIM))
+    model_seq_len = int(checkpoint.get("session_len", SESSION_LEN))
+
     dataset = SessionDataset(sequences, masks, labels)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
     model = C2Transformer(
-        feature_dim=FEATURE_DIM,
-        seq_len=SESSION_LEN,
+        feature_dim=model_feature_dim,
+        seq_len=model_seq_len,
         use_derivative_features=bool(checkpoint.get("use_derivative_features", False)),
     ).to(device_obj)
     model.load_state_dict(checkpoint["model_state_dict"])

@@ -93,9 +93,9 @@ Decision Logic:
 
 | Document | Purpose | Read When |
 |----------|---------|-----------|
-| [research_plan_multifamily_generalization.md](research_plan_multifamily_generalization.md) | Full experimental design | Starting implementation |
-| [IMMEDIATE_ACTION_PLAN.md](IMMEDIATE_ACTION_PLAN.md) | Week-by-week tasks | Planning your work |
-| [DIRECTION_CHANGE.md](DIRECTION_CHANGE.md) | Why Phase 3 was invalid | Understanding the correction |
+| [docs/planned/research_plan_multifamily_generalization.md](docs/planned/research_plan_multifamily_generalization.md) | Full experimental design | Starting implementation |
+| [docs/planned/IMMEDIATE_ACTION_PLAN.md](docs/planned/IMMEDIATE_ACTION_PLAN.md) | Week-by-week tasks | Planning your work |
+| [docs/planned/DIRECTION_CHANGE.md](docs/planned/DIRECTION_CHANGE.md) | Why Phase 3 was invalid | Understanding the correction |
 | ~~phase3_*.md~~ | **DEPRECATED - Do not use** | Reference only (historical) |
 
 ---
@@ -104,8 +104,8 @@ Decision Logic:
 
 ### Step 1: Understand (30 minutes)
 - Read this README
-- Read [DIRECTION_CHANGE.md](DIRECTION_CHANGE.md)
-- Skim [research_plan_multifamily_generalization.md](research_plan_multifamily_generalization.md)
+- Read [docs/planned/DIRECTION_CHANGE.md](docs/planned/DIRECTION_CHANGE.md)
+- Skim [docs/planned/research_plan_multifamily_generalization.md](docs/planned/research_plan_multifamily_generalization.md)
 
 ### Step 2: Setup (15 minutes)
 ```bash
@@ -115,7 +115,7 @@ git status  # Should be clean
 ```
 
 ### Step 3: Execute (3 weeks)
-Follow [IMMEDIATE_ACTION_PLAN.md](IMMEDIATE_ACTION_PLAN.md):
+Follow [docs/planned/IMMEDIATE_ACTION_PLAN.md](docs/planned/IMMEDIATE_ACTION_PLAN.md):
 - Week 1: Load multi-family dataset + remove ports
 - Week 2: Family-aware splits + evaluation
 - Week 3: Train + evaluate + interpret
@@ -246,11 +246,11 @@ Efficient progress
 ```
 START HERE:
   1. This README (you are here)
-  2. DIRECTION_CHANGE.md (why Phase 3 is invalid)
+  2. docs/planned/DIRECTION_CHANGE.md (why Phase 3 is invalid)
 
 THEN:
-  3. research_plan_multifamily_generalization.md (full design)
-  4. IMMEDIATE_ACTION_PLAN.md (task breakdown)
+  3. docs/planned/research_plan_multifamily_generalization.md (full design)
+  4. docs/planned/IMMEDIATE_ACTION_PLAN.md (task breakdown)
 
 DO NOT READ (deprecated):
   ✗ phase3_index.md
@@ -335,5 +335,5 @@ After 3 weeks, data will tell us whether to pursue host-centric modeling or focu
 
 **Created**: May 9, 2026  
 **Status**: ✅ Ready for Week 1 kickoff  
-**Next Step**: Read DIRECTION_CHANGE.md
+**Next Step**: Read docs/planned/DIRECTION_CHANGE.md
 

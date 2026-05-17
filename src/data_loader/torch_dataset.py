@@ -4,8 +4,14 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 from src.data_loader.feature_transforms import FeatureTransformConfig, apply_feature_transforms
+from src.data_loader.extended_feature_transforms import (
+    ExtendedFeatureTransformConfig,
+    apply_extended_feature_transforms,
+)
 from src.data_loader.normalization import fit_feature_normalizer
+from src.data_loader.npz_utils import detect_npz_schema
 from src.data_loader.split_utils import create_session_splits
+from src.features.feature_config_extended import FEATURE_NAMES_EXTENDED, FEATURE_SCHEMA_VERSION
 
 class C2SessionDataset(Dataset):
     def __init__(self, sequences, masks, labels):
@@ -39,21 +45,31 @@ def create_dataloaders(
     and returns PyTorch DataLoaders.
     """
     print(f"[INFO] Loading PyTorch Dataset from {npz_path}...")
+    schema = detect_npz_schema(npz_path)
+    detected_feature_names = tuple(schema["feature_names"]) if schema["feature_names"] else None
+    detected_session_len = int(schema["session_len"]) if schema["session_len"] else expected_session_len
+    is_extended_schema = schema["schema_version"] == FEATURE_SCHEMA_VERSION or detected_feature_names == tuple(FEATURE_NAMES_EXTENDED)
+
     splits = create_session_splits(
         npz_path,
         min_flows=min_flows,
-        expected_feature_names=expected_feature_names,
-        expected_session_len=expected_session_len,
+        expected_feature_names=expected_feature_names or detected_feature_names,
+        expected_session_len=expected_session_len or detected_session_len,
     )
     print(f"[INFO] Total valid sessions (>= {min_flows} flows): {len(splits.y_train) + len(splits.y_val) + len(splits.y_test)}")
 
     if transform_config is None:
-        transform_config = FeatureTransformConfig()
+        transform_config = ExtendedFeatureTransformConfig() if is_extended_schema else FeatureTransformConfig()
     normalizer = None
     x_train, x_val, x_test = splits.x_train, splits.x_val, splits.x_test
-    x_train = apply_feature_transforms(x_train, splits.m_train, transform_config, feature_names=expected_feature_names)
-    x_val = apply_feature_transforms(x_val, splits.m_val, transform_config, feature_names=expected_feature_names)
-    x_test = apply_feature_transforms(x_test, splits.m_test, transform_config, feature_names=expected_feature_names)
+    if is_extended_schema:
+        x_train = apply_extended_feature_transforms(x_train, splits.m_train, transform_config)
+        x_val = apply_extended_feature_transforms(x_val, splits.m_val, transform_config)
+        x_test = apply_extended_feature_transforms(x_test, splits.m_test, transform_config)
+    else:
+        x_train = apply_feature_transforms(x_train, splits.m_train, transform_config, feature_names=expected_feature_names or detected_feature_names)
+        x_val = apply_feature_transforms(x_val, splits.m_val, transform_config, feature_names=expected_feature_names or detected_feature_names)
+        x_test = apply_feature_transforms(x_test, splits.m_test, transform_config, feature_names=expected_feature_names or detected_feature_names)
     print(
         f"[INFO] Applied feature transforms: "
         f"log_scale={list(transform_config.log_scale_features)} | "

@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    * {
+        @apply border-neutral-200;
+    }
+
+    body {
+        @apply bg-gradient-to-br from-slate-50 to-slate-100 text-slate-900;
+    }
+
+    html {
+        scroll-behavior: smooth;
+    }
+
+    h1 {
+        @apply text-3xl font-bold tracking-tight;
+    }
+
+    h2 {
+        @apply text-2xl font-bold tracking-tight;
+    }
+
+    h3 {
+        @apply text-lg font-semibold;
+    }
+
+    code {
+        @apply font-mono text-sm;
+    }
+}
+
+@layer components {
+    .card {
+        @apply bg-white rounded-lg border border-neutral-200 shadow-sm;
+    }
+
+    .card-hover {
+        @apply card hover:shadow-md transition-shadow duration-200;
+    }
+
+    .badge {
+        @apply inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full;
+    }
+
+    .badge-success {
+        @apply badge bg-emerald-100 text-emerald-800;
+    }
+
+    .badge-warning {
+        @apply badge bg-amber-100 text-amber-800;
+    }
+
+    .badge-danger {
+        @apply badge bg-red-100 text-red-800;
+    }
+
+    .badge-info {
+        @apply badge bg-blue-100 text-blue-800;
+    }
+
+    .button-base {
+        @apply inline-flex items-center justify-center gap-2 font-medium rounded-lg transition-colors;
+    }
+
+    .button-primary {
+        @apply button-base bg-cyber-600 text-white hover:bg-cyber-700 active:bg-cyber-800;
+    }
+
+    .button-secondary {
+        @apply button-base bg-neutral-200 text-neutral-900 hover:bg-neutral-300 active:bg-neutral-400;
+    }
+
+    .input-base {
+        @apply w-full px-3 py-2 rounded-lg border border-neutral-200 bg-white text-sm;
+    }
+
+    .input-focus {
+        @apply input-base focus:outline-none focus:ring-2 focus:ring-cyber-500 focus:border-transparent;
+    }
+
+    .section {
+        @apply py-8 px-4 sm:px-6 lg:px-8;
+    }
+
+    .container-max {
+        @apply max-w-7xl mx-auto;
+    }
+}
+
+/* Animations */
+@keyframes slideInFromLeft {
+    from {
+        transform: translateX(-20px);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes fadeInScale {
+    from {
+        transform: scale(0.95);
+        opacity: 0;
+    }
+
+    to {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+.animate-slide-in-left {
+    animation: slideInFromLeft 0.5s ease-out;
+}
+
+.animate-fade-in-scale {
+    animation: fadeInScale 0.3s ease-out;
+}
