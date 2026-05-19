@@ -79,7 +79,7 @@ _ALIASES: Dict[str, Tuple[str, ...]] = {
         "datetime",
         "date_time",
     ),
-    "src_ip": ("id.orig_h", "srcaddr", "src", "source", "src_ip_addr"),
+    "src_ip": ("id.orig_h", "srcaddr", "src", "source", "src_ip_addr", "src_ip_zeek"),
     "dst_ip": ("id.resp_h", "dstaddr", "dst", "destination", "dst_ip_addr", "dest_ip_zeek"),
     "proto": ("protocol", "proto_name"),
     "duration": ("dur", "flow_duration", "elapsed"),
@@ -89,15 +89,12 @@ _ALIASES: Dict[str, Tuple[str, ...]] = {
     "resp_pkts": ("dst_pkts", "resppkts", "packets_recv", "totpkts_dst"),
     "src_port": ("sport", "srcport", "id.orig_p", "src_port_zeek"),
     "dst_port": ("dport", "dstport", "id.resp_p", "dest_port_zeek"),
-    "label": ("class", "y"),
-    "family": ("c2_family", "technique", "attack_family"),
+    "label": ("class", "y", "label_binary"),
+    "family": ("c2_family", "technique", "attack_family", "label_tactic", "label_technique"),
     "host_id": ("host", "src_host", "source_host"),
     "source_dataset": ("dataset", "source", "dataset_source"),
     "capture_id": ("capture", "scenario", "capture_name"),
     "source_path": ("path", "file_path", "origin_path"),
-    "src_ip": ("src_ip_zeek",),
-    "label": ("class", "y", "label_binary"),
-    "family": ("c2_family", "technique", "attack_family", "label_tactic", "label_technique"),
 }
 
 

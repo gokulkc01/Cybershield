@@ -164,6 +164,7 @@ class RedAgentOrchestrator:
         functionality_score: float = 0.8,
         stability_score: float = 0.85,
         diversity_bonus: float = 0.0,
+        detection_threshold: float = 0.5,
     ) -> EvaluationResult:
         """
         Evaluate mutation and compute reward.
@@ -205,6 +206,7 @@ class RedAgentOrchestrator:
             stability_score=stability_score,
             diversity_bonus=diversity_bonus,
             constraint_violations=mutation_result.constraint_violations,
+            detection_threshold=detection_threshold,
         )
 
         # Validate reward
@@ -235,6 +237,7 @@ class RedAgentOrchestrator:
         detector_inference_fn,
         mutation_types: Optional[List[str]] = None,
         severities: Optional[List[float]] = None,
+        detection_threshold: float = 0.5,
     ) -> List[EvaluationResult]:
         """
         Evaluate batch of mutations.
@@ -267,7 +270,9 @@ class RedAgentOrchestrator:
                     session, mask, mutation_type=mut_type, severity=severity
                 )
                 eval_result = self.evaluate_mutation(
-                    mut_result, detector_inference_fn
+                    mut_result,
+                    detector_inference_fn,
+                    detection_threshold=detection_threshold,
                 )
                 results.append(eval_result)
             except Exception as e:

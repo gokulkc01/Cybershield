@@ -67,6 +67,7 @@ class MultiObjectiveRewardEngine:
         stability_score: float,
         diversity_bonus: float = 0.0,
         constraint_violations: Optional[list] = None,
+        detection_threshold: float = 0.5,
     ) -> Tuple[float, Dict[str, float]]:
         """Compute multi-objective reward."""
         components = {}
@@ -76,8 +77,8 @@ class MultiObjectiveRewardEngine:
         if confidence_delta > 0:
             evasion_reward = min(confidence_delta, 1.0)
             if (
-                detector_confidence_original >= 0.5
-                and detector_confidence_mutated < 0.5
+                detector_confidence_original >= detection_threshold
+                and detector_confidence_mutated < detection_threshold
             ):
                 evasion_reward += 0.5
             evasion_reward = np.clip(evasion_reward, -1.0, 2.0)

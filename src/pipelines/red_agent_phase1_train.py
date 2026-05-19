@@ -27,6 +27,7 @@ from src.data_loader.npz_utils import detect_npz_schema, load_session_npz
 from src.features.feature_config import FEATURE_NAMES
 from src.features.feature_config_extended import FEATURE_SCHEMA_VERSION as EXTENDED_SCHEMA_VERSION
 from src.models.transformer import C2Transformer
+from src.red_agent.detector_adapters import FrozenDetectorAdapter
 from src.red_agent.orchestrator import RedAgentOrchestrator
 from src.red_agent.policy import MutationPolicyNetwork
 from src.red_agent.training import PPOTrainer
@@ -66,39 +67,12 @@ def _apply_transforms(
 
 
 def _load_frozen_detector(checkpoint_path: str, device: torch.device):
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    schema_version = str(checkpoint.get("schema_version", ""))
-    feature_dim = int(checkpoint.get("feature_dim", len(FEATURE_NAMES)))
-    session_len = int(checkpoint.get("session_len", 20))
-
-    model = C2Transformer(
-        feature_dim=feature_dim,
-        seq_len=session_len,
-        use_derivative_features=bool(checkpoint.get("use_derivative_features", False)),
-    ).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-
-    transform_cfg = _load_transform_config(checkpoint)
-    normalizer = None
-    if checkpoint.get("normalize_features", False) and checkpoint.get("feature_normalizer"):
-        normalizer = FeatureNormalizer.from_checkpoint_dict(checkpoint["feature_normalizer"])
+    adapter = FrozenDetectorAdapter(checkpoint_path, device=device)
 
     def infer_confidence(session: np.ndarray) -> float:
-        sequence = np.asarray(session, dtype=np.float32)[np.newaxis, ...]
-        real_mask = np.any(sequence != 0.0, axis=2)
-        processed = _apply_transforms(sequence, real_mask, transform_cfg, schema_version)
-        if normalizer is not None:
-            processed = normalizer.transform(processed, real_mask)
+        return adapter.score_session(session).probability
 
-        features = torch.from_numpy(processed).to(device)
-        padding_mask = torch.from_numpy(~real_mask).to(device)
-        with torch.no_grad():
-            logits = model(features, padding_mask)
-            probability = torch.sigmoid(logits).item()
-        return float(max(probability, 1.0 - probability))
-
-    return infer_confidence, checkpoint
+    return infer_confidence, adapter.checkpoint
 
 
 def _serialize_mutation_results(results) -> List[Dict[str, Any]]:
@@ -165,7 +139,7 @@ def run_phase1_training(
 
     policy = MutationPolicyNetwork(input_dim=sessions.shape[-1], device=str(device_obj))
     trainer = PPOTrainer(policy, learning_rate=learning_rate)
-    orchestrator = RedAgentOrchestrator(feature_names=list(FEATURE_NAMES))
+    orchestrator = RedAgentOrchestrator(feature_names=list(expected_feature_names))
 
     log_rows: List[Dict[str, Any]] = []
     total_reward_sum = 0.0
@@ -223,6 +197,7 @@ def run_phase1_training(
                 detector_inference_fn=detector_infer,
                 mutation_types=mutation_types,
                 severities=severity_values,
+                detection_threshold=float(detector_checkpoint.get("optimal_threshold", 0.5)),
             )
 
             if not eval_results:
@@ -288,6 +263,7 @@ def run_phase1_training(
             "checkpoint_path": checkpoint_path,
             "baseline_npz": baseline_npz,
             "feature_names": list(FEATURE_NAMES),
+            "detector_score": "positive_c2_probability",
         },
         policy_path,
     )
