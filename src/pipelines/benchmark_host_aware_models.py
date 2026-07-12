@@ -7,8 +7,11 @@ current-session tensors into baseline-compatible session NPZs, trains:
 2. ``DomainAdaptiveC2Transformer`` on current sessions only.
 3. ``HostAwareDomainAdaptiveTransformer`` on current + host-history windows.
 
-It then writes a single JSON and Markdown report with validation-frozen test
-metrics at the requested FPR budgets.
+Each model is trained once per seed (``--seeds``, default 5 seeds).  The final
+JSON and Markdown reports aggregate test metrics across seeds as mean with a
+95% t-distribution CI, and every per-seed test evaluation additionally carries
+bootstrap CIs and base-rate (prevalence-adjusted) metrics from
+``src.evaluation.multifamily_metrics.honest_test_report``.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from src.data_loader.host_window_dataset import HOST_AWARE_SCHEMA_VERSION, load_
 from src.data_loader.normalization import FeatureNormalizer, fit_feature_normalizer
 from src.data_loader.npz_utils import detect_npz_schema, load_session_npz
 from src.data_loader.torch_dataset import C2SessionDataset
+from src.evaluation.multifamily_metrics import honest_test_report, seed_mean_ci
 from src.evaluation.operating_point import find_threshold_under_fpr_budget, is_better_operating_point
 from src.features.feature_config_extended import FEATURE_SCHEMA_VERSION as EXTENDED_SCHEMA_VERSION
 from src.models.domain_adaptive_transformer import DomainAdaptiveC2Transformer
@@ -79,36 +83,45 @@ class DomainSessionDataset(torch.utils.data.Dataset):
         return self.sequences[idx], self.padding_masks[idx], self.labels[idx], self.domain_ids[idx]
 
 
+MODEL_ORDER = (
+    "c2_transformer",
+    "domain_adaptive_transformer",
+    "host_aware_domain_adaptive_transformer",
+)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark host-aware C2 model against session baselines")
     parser.add_argument("--host_split_dir", default="data/processed/host_aware_mvp")
     parser.add_argument("--out_dir", default="experiments/host_aware_model_benchmark")
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--host_aware_epochs", type=int, default=None)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--patience", type=int, default=2)
+    parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--default_fpr_budget", type=float, default=DEFAULT_FPR_BUDGET)
     parser.add_argument("--fpr_budgets", default="0.005,0.015,0.03")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--seeds",
+        default="42,43,44,45,46",
+        help="Comma-separated seeds; each model is trained once per seed and metrics are aggregated as mean +/- 95%% CI.",
+    )
+    parser.add_argument("--base_rates", default="0.001,0.01", help="Deployment base rates for prevalence-adjusted metrics.")
+    parser.add_argument("--n_bootstrap", type=int, default=1000)
     parser.add_argument("--no_normalize_features", action="store_true")
     parser.add_argument("--no_normalize_host_features", action="store_true")
     parser.add_argument(
         "--reuse_existing_host_aware",
         action="store_true",
-        help="Reuse an existing host-aware training_results.json in the benchmark output if present.",
+        help="Reuse an existing per-seed host-aware training_results.json in the benchmark output if present.",
     )
     args = parser.parse_args()
 
     budgets = parse_budgets(args.fpr_budgets)
+    base_rates = parse_budgets(args.base_rates)
+    seeds = parse_seeds(args.seeds)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
 
     host_split_dir = Path(args.host_split_dir)
     session_npzs = convert_host_split_to_session_npzs(host_split_dir, out_dir / "baseline_session_npz")
@@ -120,71 +133,101 @@ def main() -> None:
         session_npzs,
         normalize_features=not args.no_normalize_features,
     )
-
-    c2_result = train_session_baseline(
-        model_name="c2_transformer",
-        model_factory=lambda: C2Transformer(
-            feature_dim=session_data.feature_dim,
-            seq_len=session_data.session_len,
-        ),
-        forward_fn=lambda model, batch_x, batch_mask, batch_domain: model(batch_x, batch_mask),
-        session_data=session_data,
-        model_dir=out_dir / "c2_transformer",
-        batch_size=args.batch_size,
-        epochs=args.epochs,
-        lr=args.lr,
-        patience=args.patience,
-        default_fpr_budget=args.default_fpr_budget,
-        fpr_budgets=budgets,
-        seed=args.seed,
-    )
-
     domain_name = infer_single_domain(host_split_dir)
-    domain_result = train_session_baseline(
-        model_name="domain_adaptive_transformer",
-        model_factory=lambda: DomainAdaptiveC2Transformer(
-            domains=[domain_name],
-            feature_dim=session_data.feature_dim,
-            seq_len=session_data.session_len,
-        ),
-        forward_fn=lambda model, batch_x, batch_mask, batch_domain: model(batch_x, batch_mask, batch_domain),
-        session_data=session_data,
-        model_dir=out_dir / "domain_adaptive_transformer",
-        batch_size=args.batch_size,
-        epochs=args.epochs,
-        lr=args.lr,
-        patience=args.patience,
-        default_fpr_budget=args.default_fpr_budget,
-        fpr_budgets=budgets,
-        seed=args.seed,
-        domain_name=domain_name,
-    )
 
-    host_aware_dir = out_dir / "host_aware_domain_adaptive_transformer"
-    host_aware_results_path = host_aware_dir / "training_results.json"
-    if args.reuse_existing_host_aware and host_aware_results_path.exists():
-        print(f"[INFO] Reusing host-aware results from {host_aware_results_path}")
-        host_aware_result = json.loads(host_aware_results_path.read_text(encoding="utf-8"))
-    else:
-        print("[INFO] Training host-aware domain-adaptive transformer...")
-        host_aware_result = train_host_aware_domain_adaptive_model(
-            train_npz=str(host_split_dir / "train_host_windows.npz"),
-            val_npz=str(host_split_dir / "val_host_windows.npz"),
-            test_npz=str(host_split_dir / "test_host_windows.npz"),
-            model_save_dir=str(host_aware_dir),
+    per_seed_results: dict[str, dict[str, dict]] = {model_name: {} for model_name in MODEL_ORDER}
+    for seed in seeds:
+        print(f"\n[INFO] ===== Seed {seed} ({seeds.index(seed) + 1}/{len(seeds)}) =====")
+        seed_dir = out_dir / f"seed_{seed}"
+
+        c2_result = train_session_baseline(
+            model_name="c2_transformer",
+            model_factory=lambda: C2Transformer(
+                feature_dim=session_data.feature_dim,
+                seq_len=session_data.session_len,
+            ),
+            forward_fn=lambda model, batch_x, batch_mask, batch_domain: model(batch_x, batch_mask),
+            session_data=session_data,
+            model_dir=seed_dir / "c2_transformer",
             batch_size=args.batch_size,
-            epochs=args.host_aware_epochs or args.epochs,
+            epochs=args.epochs,
             lr=args.lr,
             patience=args.patience,
             default_fpr_budget=args.default_fpr_budget,
             fpr_budgets=budgets,
-            normalize_features=not args.no_normalize_features,
-            normalize_host_features=not args.no_normalize_host_features,
-            seed=args.seed,
+            seed=seed,
+            base_rates=base_rates,
+            n_bootstrap=args.n_bootstrap,
         )
+        per_seed_results["c2_transformer"][str(seed)] = c2_result
+
+        domain_result = train_session_baseline(
+            model_name="domain_adaptive_transformer",
+            model_factory=lambda: DomainAdaptiveC2Transformer(
+                domains=[domain_name],
+                feature_dim=session_data.feature_dim,
+                seq_len=session_data.session_len,
+            ),
+            forward_fn=lambda model, batch_x, batch_mask, batch_domain: model(batch_x, batch_mask, batch_domain),
+            session_data=session_data,
+            model_dir=seed_dir / "domain_adaptive_transformer",
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            lr=args.lr,
+            patience=args.patience,
+            default_fpr_budget=args.default_fpr_budget,
+            fpr_budgets=budgets,
+            seed=seed,
+            domain_name=domain_name,
+            base_rates=base_rates,
+            n_bootstrap=args.n_bootstrap,
+        )
+        per_seed_results["domain_adaptive_transformer"][str(seed)] = domain_result
+
+        host_aware_dir = seed_dir / "host_aware_domain_adaptive_transformer"
+        host_aware_results_path = host_aware_dir / "training_results.json"
+        if args.reuse_existing_host_aware and host_aware_results_path.exists():
+            print(f"[INFO] Reusing host-aware results from {host_aware_results_path}")
+            host_aware_result = json.loads(host_aware_results_path.read_text(encoding="utf-8"))
+        else:
+            print("[INFO] Training host-aware domain-adaptive transformer...")
+            host_aware_result = train_host_aware_domain_adaptive_model(
+                train_npz=str(host_split_dir / "train_host_windows.npz"),
+                val_npz=str(host_split_dir / "val_host_windows.npz"),
+                test_npz=str(host_split_dir / "test_host_windows.npz"),
+                model_save_dir=str(host_aware_dir),
+                batch_size=args.batch_size,
+                epochs=args.host_aware_epochs or args.epochs,
+                lr=args.lr,
+                patience=args.patience,
+                default_fpr_budget=args.default_fpr_budget,
+                fpr_budgets=budgets,
+                normalize_features=not args.no_normalize_features,
+                normalize_host_features=not args.no_normalize_host_features,
+                seed=seed,
+            )
+        host_aware_result = normalize_host_aware_result(host_aware_result)
+        attach_honest_test_report(
+            host_aware_result,
+            default_fpr_budget=args.default_fpr_budget,
+            fpr_budgets=budgets,
+            base_rates=base_rates,
+            n_bootstrap=args.n_bootstrap,
+            random_seed=seed,
+        )
+        per_seed_results["host_aware_domain_adaptive_transformer"][str(seed)] = host_aware_result
+
+    aggregated_models = {
+        model_name: aggregate_model_metrics(
+            list(per_seed_results[model_name].values()),
+            budgets=budgets,
+            base_rates=base_rates,
+        )
+        for model_name in MODEL_ORDER
+    }
 
     report = {
-        "benchmark_version": "host_aware_model_benchmark_v1",
+        "benchmark_version": "host_aware_model_benchmark_v2_multiseed",
         "host_split_dir": str(host_split_dir),
         "out_dir": str(out_dir),
         "dataset_summary": dataset_summary,
@@ -195,17 +238,16 @@ def main() -> None:
             "batch_size": int(args.batch_size),
             "lr": float(args.lr),
             "patience": int(args.patience),
-            "seed": int(args.seed),
+            "seeds": list(seeds),
             "default_fpr_budget": float(args.default_fpr_budget),
             "fpr_budgets": list(budgets),
+            "base_rates": list(base_rates),
+            "n_bootstrap": int(args.n_bootstrap),
             "normalize_features": not args.no_normalize_features,
             "normalize_host_features": not args.no_normalize_host_features,
         },
-        "models": {
-            "c2_transformer": c2_result,
-            "domain_adaptive_transformer": domain_result,
-            "host_aware_domain_adaptive_transformer": normalize_host_aware_result(host_aware_result),
-        },
+        "models": aggregated_models,
+        "per_seed_models": per_seed_results,
     }
 
     report_path = out_dir / "comparison_report.json"
@@ -332,6 +374,8 @@ def train_session_baseline(
     fpr_budgets: tuple[float, ...],
     seed: int,
     domain_name: str = "session",
+    base_rates: tuple[float, ...] = (0.001, 0.01),
+    n_bootstrap: int = 1000,
 ) -> dict[str, object]:
     model_dir.mkdir(parents=True, exist_ok=True)
     best_model_path = model_dir / "best_model.pth"
@@ -454,6 +498,16 @@ def train_session_baseline(
         fpr_budgets,
         fixed_thresholds=fixed_thresholds,
     )
+    default_threshold = float(fixed_thresholds[f"{default_fpr_budget:.4f}"])
+    test_honest_report = honest_test_report(
+        test_targets,
+        test_probs,
+        threshold=default_threshold,
+        fpr_budgets=fpr_budgets,
+        base_rates=base_rates,
+        n_bootstrap=n_bootstrap,
+        random_seed=seed,
+    )
 
     results = {
         "model_name": model_name,
@@ -461,6 +515,7 @@ def train_session_baseline(
         "results_path": str(results_path),
         "validation_metrics_by_budget": checkpoint["validation_metrics_by_budget"],
         "test_metrics_by_budget": test_metrics_by_budget,
+        "honest_test_report": test_honest_report,
         "schema_version": session_data.schema_version,
         "feature_dim": session_data.feature_dim,
         "session_len": session_data.session_len,
@@ -545,6 +600,108 @@ def budget_metrics(
     return out
 
 
+def parse_seeds(raw_value: str) -> list[int]:
+    seeds = [int(part.strip()) for part in raw_value.split(",") if part.strip()]
+    if not seeds:
+        raise ValueError("--seeds must contain at least one integer seed")
+    if len(seeds) != len(set(seeds)):
+        raise ValueError("--seeds must not contain duplicates")
+    return seeds
+
+
+def attach_honest_test_report(
+    result: dict[str, object],
+    *,
+    default_fpr_budget: float,
+    fpr_budgets: tuple[float, ...],
+    base_rates: tuple[float, ...],
+    n_bootstrap: int,
+    random_seed: int,
+) -> None:
+    """Compute the honest test report from stored test scores, when available."""
+    if "honest_test_report" in result:
+        return
+    test_scores = result.get("test_scores")
+    test_labels = result.get("test_labels")
+    if not test_scores or test_labels is None:
+        print("[WARN] Host-aware result has no stored test scores; skipping honest test report.")
+        return
+    default_key = f"{default_fpr_budget:.4f}"
+    threshold = float(result["validation_metrics_by_budget"][default_key]["threshold"])
+    result["honest_test_report"] = honest_test_report(
+        np.asarray(test_labels, dtype=int),
+        np.asarray(test_scores, dtype=float),
+        threshold=threshold,
+        fpr_budgets=fpr_budgets,
+        base_rates=base_rates,
+        n_bootstrap=n_bootstrap,
+        random_seed=random_seed,
+    )
+
+
+def aggregate_model_metrics(
+    seed_results: list[dict[str, object]],
+    *,
+    budgets: tuple[float, ...],
+    base_rates: tuple[float, ...],
+) -> dict[str, object]:
+    """Aggregate per-seed results into mean +/- 95% CI per metric."""
+    aggregated: dict[str, object] = {"n_seeds": len(seed_results)}
+
+    for phase in ("validation_metrics_by_budget", "test_metrics_by_budget"):
+        phase_agg: dict[str, dict[str, dict]] = {}
+        for budget in budgets:
+            key = f"{float(budget):.4f}"
+            metrics_agg: dict[str, dict] = {}
+            for metric in ("recall", "fpr", "precision", "f1", "auc"):
+                values = [
+                    float(result[phase][key][metric])
+                    for result in seed_results
+                    if metric in result.get(phase, {}).get(key, {})
+                ]
+                if values:
+                    metrics_agg[metric] = seed_mean_ci(values)
+            phase_agg[key] = metrics_agg
+        aggregated[phase] = phase_agg
+
+    honest_reports = [
+        result["honest_test_report"]
+        for result in seed_results
+        if isinstance(result.get("honest_test_report"), dict)
+    ]
+    if honest_reports:
+        honest_agg: dict[str, object] = {}
+        for metric in ("roc_auc", "pr_auc", "recall_at_fpr_1pct", "precision_at_recall_80pct"):
+            values = [
+                float(report["overall"][metric])
+                for report in honest_reports
+                if report["overall"].get(metric) is not None
+            ]
+            if values:
+                honest_agg[metric] = seed_mean_ci(values)
+        adjusted_agg: dict[str, dict] = {}
+        for base_rate in base_rates:
+            base_key = f"{float(base_rate):g}"
+            values = [
+                float(report["prevalence_adjusted"][base_key]["adjusted_pr_auc"])
+                for report in honest_reports
+                if base_key in report.get("prevalence_adjusted", {})
+            ]
+            if values:
+                adjusted_agg[base_key] = {"adjusted_pr_auc": seed_mean_ci(values)}
+        if adjusted_agg:
+            honest_agg["prevalence_adjusted"] = adjusted_agg
+        aggregated["honest_test_metrics"] = honest_agg
+
+    aggregated["per_seed_test_auc"] = {
+        str(result.get("seed", index)): float(
+            result["test_metrics_by_budget"][f"{float(budgets[0]):.4f}"]["auc"]
+        )
+        for index, result in enumerate(seed_results)
+    }
+    return aggregated
+
+
 def normalize_host_aware_result(result: dict[str, object]) -> dict[str, object]:
     normalized = dict(result)
     normalized["model_name"] = "host_aware_domain_adaptive_transformer"
@@ -580,14 +737,26 @@ def infer_single_domain(host_split_dir: Path) -> str:
     return sources[0] if len(sources) == 1 else "benchmark_mixed"
 
 
+def format_mean_ci(stats: dict[str, object] | None) -> str:
+    if not stats or stats.get("mean") is None:
+        return "n/a"
+    mean = float(stats["mean"])
+    if stats.get("n", 0) <= 1 or stats.get("ci_lower") is None:
+        return f"{mean:.4f}"
+    return f"{mean:.4f} [{float(stats['ci_lower']):.4f}, {float(stats['ci_upper']):.4f}]"
+
+
 def render_markdown_report(report: dict[str, object]) -> str:
     default_key = f"{float(report['settings']['default_fpr_budget']):.4f}"
     models = report["models"]
+    seeds = report["settings"]["seeds"]
     lines = [
-        "# Host-Aware Model Benchmark",
+        "# Host-Aware Model Benchmark (Multi-Seed)",
         "",
         f"Host split: `{report['host_split_dir']}`",
         f"Default FPR budget: `{default_key}`",
+        f"Seeds: `{', '.join(str(seed) for seed in seeds)}` "
+        f"(metrics reported as mean [95% CI] across seeds)",
         "",
         "## Dataset",
         "",
@@ -615,47 +784,74 @@ def render_markdown_report(report: dict[str, object]) -> str:
     lines.extend(
         [
             "",
-            f"## Default Budget ({default_key})",
+            f"## Test metrics at default budget ({default_key}), mean [95% CI] across seeds",
             "",
-            "| Model | Val Recall | Val FPR | Val F1 | Val AUC | Test Recall | Test FPR | Test F1 | Test AUC | Feasible |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            "| Model | Test AUC | Test Recall | Test FPR | Test F1 |",
+            "| --- | --- | --- | --- | --- |",
         ]
     )
     for model_key, result in models.items():
-        val = result["validation_metrics_by_budget"][default_key]
         test = result["test_metrics_by_budget"][default_key]
         lines.append(
             f"| {model_key} | "
-            f"{val['recall']:.4f} | {val['fpr']:.4f} | {val['f1']:.4f} | {val['auc']:.4f} | "
-            f"{test['recall']:.4f} | {test['fpr']:.4f} | {test['f1']:.4f} | {test['auc']:.4f} | "
-            f"{test['feasible']} |"
+            f"{format_mean_ci(test.get('auc'))} | {format_mean_ci(test.get('recall'))} | "
+            f"{format_mean_ci(test.get('fpr'))} | {format_mean_ci(test.get('f1'))} |"
         )
 
-    lines.extend(["", "## All Budgets", ""])
+    lines.extend(
+        [
+            "",
+            "## Honest test metrics (threshold-free + base-rate adjusted), mean [95% CI]",
+            "",
+            "| Model | ROC-AUC | PR-AUC | Recall@1%FPR | Adj PR-AUC (per base rate) |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+    )
+    for model_key, result in models.items():
+        honest = result.get("honest_test_metrics", {})
+        adjusted = honest.get("prevalence_adjusted", {})
+        adjusted_text = (
+            "; ".join(
+                f"pi={base_key}: {format_mean_ci(stats.get('adjusted_pr_auc'))}"
+                for base_key, stats in adjusted.items()
+            )
+            or "n/a"
+        )
+        lines.append(
+            f"| {model_key} | "
+            f"{format_mean_ci(honest.get('roc_auc'))} | {format_mean_ci(honest.get('pr_auc'))} | "
+            f"{format_mean_ci(honest.get('recall_at_fpr_1pct'))} | {adjusted_text} |"
+        )
+
+    lines.extend(["", "## All budgets (test), mean [95% CI]", ""])
     for budget in report["settings"]["fpr_budgets"]:
         key = f"{float(budget):.4f}"
         lines.extend(
             [
                 f"### FPR <= {key}",
                 "",
-                "| Model | Val Recall/FPR/F1 | Test Recall/FPR/F1 | Test Feasible |",
+                "| Model | Test Recall | Test FPR | Test F1 |",
                 "| --- | --- | --- | --- |",
             ]
         )
         for model_key, result in models.items():
-            val = result["validation_metrics_by_budget"][key]
             test = result["test_metrics_by_budget"][key]
             lines.append(
                 f"| {model_key} | "
-                f"{val['recall']:.4f} / {val['fpr']:.4f} / {val['f1']:.4f} | "
-                f"{test['recall']:.4f} / {test['fpr']:.4f} / {test['f1']:.4f} | "
-                f"{test['feasible']} |"
+                f"{format_mean_ci(test.get('recall'))} | {format_mean_ci(test.get('fpr'))} | "
+                f"{format_mean_ci(test.get('f1'))} |"
             )
         lines.append("")
 
-    lines.extend(["## Artifacts", ""])
+    lines.extend(["## Per-seed test AUC", ""])
     for model_key, result in models.items():
-        lines.append(f"- {model_key}: `{result['best_model_path']}`")
+        per_seed = result.get("per_seed_test_auc", {})
+        seed_text = ", ".join(f"{seed}: {auc:.4f}" for seed, auc in per_seed.items())
+        lines.append(f"- {model_key}: {seed_text}")
+
+    lines.extend(["", "## Artifacts", ""])
+    for model_key in models:
+        lines.append(f"- {model_key}: per-seed checkpoints under `seed_<seed>/{model_key}/`")
     return "\n".join(lines) + "\n"
 
 

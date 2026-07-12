@@ -7,13 +7,26 @@ Positive/C2 traffic:
   - CTU-13 raw BinetFlow rows whose Label parses as C2/botnet
 
 Benign traffic:
-  - UWF ZeekData24 normalized benign connection CSVs only
+  - CTU-13 raw BinetFlow rows labeled ``Normal`` (same-provenance benign,
+    host-originated ``From-Normal``/``Normal`` labels only; uncertain
+    ``Background`` rows and destination-derived ``To-*`` labels are excluded)
+  - UWF ZeekData24 normalized benign connection CSVs (optional; disable with
+    ``--skip-uwf-benign`` for a same-provenance CTU-only split)
 
 This is intentionally separate from attack-vs-benign UWF experiments.  UWF
 attack folders are not included because the local labels are not clean C2.
 
+Split modes
+-----------
+- Default: host-separated split per class (``split_records_by_label_and_host``).
+- ``--split-by-capture``: capture-separated splits (e.g. train=scenario A,
+  val=scenario B, test=scenario C).  Each split then contains benign *and* C2
+  from the same capture, so provenance cannot separate the classes.  This is
+  required for CTU-13 where every capture has a single infected source host,
+  which makes a pooled host-separated split of the C2 class impossible.
+
 The output remains host-aware:
-  - split by source host
+  - split by source host (or by capture with per-capture host namespacing)
   - build causal host windows from all records assigned to each split
   - optionally downsample current samples after window construction so class
     balance improves without destroying available host history context
@@ -80,6 +93,21 @@ def main() -> None:
     parser.add_argument("--skip-ctu13", action="store_true")
     parser.add_argument("--skip-mcfp", action="store_true")
     parser.add_argument("--skip-modern-c2", action="store_true")
+    parser.add_argument(
+        "--skip-uwf-benign",
+        action="store_true",
+        help="Exclude UWF ZeekData24 benign so benign comes only from same-provenance CTU-13 Normal rows.",
+    )
+    parser.add_argument(
+        "--split-by-capture",
+        default="",
+        help=(
+            "Capture-separated split spec, e.g. "
+            "'train=capture20110810;val=capture20110811;test=capture20110815'. "
+            "When set, records are assigned to splits by capture_id and host ids are "
+            "namespaced per capture. Empty string keeps the pooled host-separated split."
+        ),
+    )
     parser.add_argument("--modern-c2-dir", default="data/raw/modern_c2")
     parser.add_argument(
         "--modern-families",
@@ -107,14 +135,16 @@ def main() -> None:
         source_summaries.append(summary)
 
     if not args.skip_ctu13:
-        records, summary = build_ctu13_c2_records(
+        ctu_positive, ctu_benign, ctu_summaries = build_ctu13_records(
             raw_dir,
-            min_flows=args.c2_min_flows,
+            c2_min_flows=args.c2_min_flows,
+            benign_min_flows=args.benign_min_flows,
             inactivity_timeout=args.inactivity_timeout,
             max_files=args.max_ctu_files,
         )
-        positive_records.extend(records)
-        source_summaries.append(summary)
+        positive_records.extend(ctu_positive)
+        benign_records.extend(ctu_benign)
+        source_summaries.extend(ctu_summaries)
 
     modern_families = parse_family_list(args.modern_families)
     if not args.skip_modern_c2:
@@ -127,28 +157,38 @@ def main() -> None:
         positive_records.extend(records)
         source_summaries.append(summary)
 
-    records, summary = build_uwf_benign_records(
-        raw_dir / "uwf_zeekdata24" / "benign",
-        min_flows=args.benign_min_flows,
-        inactivity_timeout=args.inactivity_timeout,
-    )
-    benign_records.extend(records)
-    source_summaries.append(summary)
+    if not args.skip_uwf_benign:
+        records, summary = build_uwf_benign_records(
+            raw_dir / "uwf_zeekdata24" / "benign",
+            min_flows=args.benign_min_flows,
+            inactivity_timeout=args.inactivity_timeout,
+        )
+        benign_records.extend(records)
+        source_summaries.append(summary)
 
     if not positive_records:
         raise ValueError("No C2-positive records were produced from MCFP/CTU.")
     if not benign_records:
-        raise ValueError("No benign records were produced from UWF benign telemetry.")
+        raise ValueError("No benign records were produced (CTU-13 Normal and/or UWF benign telemetry).")
+
+    capture_assignments = parse_capture_split_spec(args.split_by_capture)
 
     all_records = renumber_records(positive_records + benign_records)
-    assigned_splits = split_records_by_label_and_host(
-        all_records,
-        val_fraction=args.val_fraction,
-        test_fraction=args.test_fraction,
-        min_eval_benign=args.min_eval_benign,
-        min_eval_positive=args.min_eval_positive,
-        random_seed=args.random_seed,
-    )
+    if capture_assignments:
+        all_records = namespace_hosts_by_capture(all_records)
+    all_records, purity_summary = enforce_host_label_purity(all_records)
+
+    if capture_assignments:
+        assigned_splits = split_records_by_capture(all_records, capture_assignments)
+    else:
+        assigned_splits = split_records_by_label_and_host(
+            all_records,
+            val_fraction=args.val_fraction,
+            test_fraction=args.test_fraction,
+            min_eval_benign=args.min_eval_benign,
+            min_eval_positive=args.min_eval_positive,
+            random_seed=args.random_seed,
+        )
 
     outputs: dict[str, str] = {}
     split_summaries: dict[str, dict[str, object]] = {}
@@ -214,17 +254,41 @@ def main() -> None:
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "policy": {
             "positive_sources": [
-                "mcfp_stratosphere botnet raw BinetFlow files",
-                "ctu13 raw BinetFlow rows parsed as C2/botnet",
-                "modern_c2 authorized Zeek/normalized telemetry under data/raw/modern_c2 when present",
+                source
+                for source in (
+                    "mcfp_stratosphere botnet raw BinetFlow files" if not args.skip_mcfp else None,
+                    "ctu13 raw BinetFlow rows parsed as C2/botnet" if not args.skip_ctu13 else None,
+                    "modern_c2 authorized Zeek/normalized telemetry under data/raw/modern_c2 when present"
+                    if not args.skip_modern_c2
+                    else None,
+                )
+                if source
             ],
-            "benign_sources": ["uwf_zeekdata24 benign normalized-Zeek CSV"],
+            "benign_sources": [
+                source
+                for source in (
+                    "ctu13 raw BinetFlow rows labeled Normal (host-originated From-Normal/Normal only)"
+                    if not args.skip_ctu13
+                    else None,
+                    "uwf_zeekdata24 benign normalized-Zeek CSV" if not args.skip_uwf_benign else None,
+                )
+                if source
+            ],
             "excluded_sources": [
                 "uwf_zeekdata24 attack tactic folders because local positives are not clean C2 labels",
+                "ctu13 Background rows because their ground truth is uncertain",
+                "ctu13 To-* destination-derived labels because the source host is unverified",
             ],
             "class_balance": f"majority current samples capped to about {args.max_class_ratio}:1 per split when possible",
-            "host_separation": "source hosts are disjoint across train/val/test",
+            "host_separation": (
+                "splits are capture-separated; host ids are namespaced per capture and disjoint across splits"
+                if capture_assignments
+                else "source hosts are disjoint across train/val/test"
+            ),
+            "split_mode": "capture_separated" if capture_assignments else "host_separated_pooled",
+            "capture_assignments": capture_assignments or None,
         },
+        "host_label_purity": purity_summary,
         "settings": {
             "history_size": args.history_size,
             "c2_min_flows": args.c2_min_flows,
@@ -238,13 +302,18 @@ def main() -> None:
             "random_seed": args.random_seed,
             "modern_c2_dir": str(Path(args.modern_c2_dir)),
             "modern_families": modern_families,
+            "skip_ctu13": bool(args.skip_ctu13),
+            "skip_mcfp": bool(args.skip_mcfp),
+            "skip_modern_c2": bool(args.skip_modern_c2),
+            "skip_uwf_benign": bool(args.skip_uwf_benign),
+            "split_by_capture": args.split_by_capture or None,
         },
         "feature_names": list(FEATURE_NAMES_EXTENDED),
         "host_feature_names": list(HOST_FEATURE_NAMES),
         "source_summaries": source_summaries,
         "raw_record_counts": {
-            "c2": len(positive_records),
-            "benign": len(benign_records),
+            "c2": sum(1 for record in all_records if int(record.label) == 1),
+            "benign": sum(1 for record in all_records if int(record.label) == 0),
             "total": len(all_records),
         },
         "split_integrity": {
@@ -324,51 +393,80 @@ def build_mcfp_c2_records(
     }
 
 
-def build_ctu13_c2_records(
+def build_ctu13_records(
     raw_dir: Path,
     *,
-    min_flows: int,
+    c2_min_flows: int,
+    benign_min_flows: int,
     inactivity_timeout: float,
     max_files: int,
-) -> tuple[list[HostSessionRecord], dict[str, object]]:
-    records: list[HostSessionRecord] = []
+) -> tuple[list[HostSessionRecord], list[HostSessionRecord], list[dict[str, object]]]:
+    """Build CTU-13 host session records with per-row labels.
+
+    Returns positive (From-Botnet) records, benign (From-Normal) records, and
+    one source summary per label so downstream reporting stays per-class.
+    """
+    positive_records: list[HostSessionRecord] = []
+    benign_records: list[HostSessionRecord] = []
     files = unique_ctu13_files(raw_dir)
     if max_files > 0:
         files = files[:max_files]
-    file_summaries: list[dict[str, object]] = []
+    c2_file_summaries: list[dict[str, object]] = []
+    benign_file_summaries: list[dict[str, object]] = []
     for path in files:
-        df = load_ctu13_c2_dataframe(path)
+        df, label_counts = load_ctu13_labeled_dataframe(path)
         if df.empty:
-            file_summaries.append({"path": str(path), "flows": 0, "sessions": 0, "hosts": 0})
+            empty = {"path": str(path), "flows": 0, "sessions": 0, "hosts": 0}
+            c2_file_summaries.append(dict(empty))
+            benign_file_summaries.append(dict(empty))
             continue
         df = filter_ip_flow_rows(df)
-        df = df.copy()
-        df["label"] = 1
-        file_records = build_extended_host_session_records_from_dataframe(
-            df,
-            source=DatasetSource.CTU13.value,
-            family=f"ctu13_{path.stem}",
-            capture_id=path.stem,
-            label_col="label",
-            inactivity_timeout=inactivity_timeout,
-            min_flows=min_flows,
-        )
-        records.extend(file_records)
-        file_summaries.append(
-            {
-                "path": str(path),
-                "flows": int(len(df)),
-                "sessions": int(len(file_records)),
-                "hosts": int(df["src_ip"].nunique()),
-            }
-        )
-        print(f"[INFO] CTU13 C2 {path.name}: flows={len(df):,}, sessions={len(file_records):,}")
-    return records, {
-        "source": DatasetSource.CTU13.value,
-        "label": "c2",
-        "files": file_summaries,
-        "sessions": len(records),
-    }
+        for label_value, min_flows, bucket, summaries in (
+            (1, c2_min_flows, positive_records, c2_file_summaries),
+            (0, benign_min_flows, benign_records, benign_file_summaries),
+        ):
+            part = df.loc[df["label"] == label_value]
+            file_records: list[HostSessionRecord] = []
+            if not part.empty:
+                try:
+                    file_records = build_extended_host_session_records_from_dataframe(
+                        part,
+                        source=DatasetSource.CTU13.value,
+                        family=f"ctu13_{path.stem}",
+                        capture_id=path.stem,
+                        label_col="label",
+                        inactivity_timeout=inactivity_timeout,
+                        min_flows=min_flows,
+                    )
+                except ValueError:
+                    file_records = []
+            bucket.extend(file_records)
+            summaries.append(
+                {
+                    "path": str(path),
+                    "flows": int(len(part)),
+                    "sessions": int(len(file_records)),
+                    "hosts": int(part["src_ip"].nunique()) if not part.empty else 0,
+                    "raw_label_counts": dict(label_counts),
+                }
+            )
+            class_name = "C2" if label_value == 1 else "benign"
+            print(f"[INFO] CTU13 {class_name} {path.name}: flows={len(part):,}, sessions={len(file_records):,}")
+    summaries = [
+        {
+            "source": DatasetSource.CTU13.value,
+            "label": "c2",
+            "files": c2_file_summaries,
+            "sessions": len(positive_records),
+        },
+        {
+            "source": DatasetSource.CTU13.value,
+            "label": "benign",
+            "files": benign_file_summaries,
+            "sessions": len(benign_records),
+        },
+    ]
+    return positive_records, benign_records, summaries
 
 
 def build_modern_c2_records(
@@ -583,22 +681,62 @@ def parse_family_list(raw_value: str) -> list[str]:
     return families or list(MODERN_C2_FAMILIES)
 
 
-def load_ctu13_c2_dataframe(path: Path) -> pd.DataFrame:
-    chunks: list[pd.DataFrame] = []
-    total = 0
-    c2_rows = 0
+CTU13_CATEGORY_C2 = "c2"
+CTU13_CATEGORY_NORMAL = "normal"
+CTU13_CATEGORY_BACKGROUND = "background"
+
+
+def categorize_ctu13_label(raw_label: str) -> str:
+    """Map a raw CTU-13 Label string to c2 / normal / background.
+
+    ``To-*`` labels are destination-derived (the *source* host is unverified),
+    so they are treated as background regardless of keyword. ``Background`` is
+    excluded from the labeled set because its ground truth is uncertain.
+    """
+    normalized = str(raw_label).strip().lower()
+    if normalized.startswith("flow=to-"):
+        return CTU13_CATEGORY_BACKGROUND
+    if label_from_string(normalized):
+        return CTU13_CATEGORY_C2
+    if "normal" in normalized:
+        return CTU13_CATEGORY_NORMAL
+    return CTU13_CATEGORY_BACKGROUND
+
+
+def load_ctu13_labeled_dataframe(path: Path) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Load CTU-13 rows with per-row labels: C2 (1) and Normal benign (0).
+
+    Background rows are excluded entirely; per-category raw row counts are
+    returned so the exclusion is auditable in the split metadata.
+    """
+    raw_chunks: dict[int, list[pd.DataFrame]] = {0: [], 1: []}
+    category_counts: Counter[str] = Counter()
     for chunk in pd.read_csv(path, chunksize=CHUNK_SIZE, low_memory=False):
-        total += int(len(chunk))
-        labels = chunk["Label"].fillna("").astype(str).map(label_from_string).astype(bool)
-        if labels.any():
-            c2_chunk = chunk.loc[labels].copy()
-            chunks.append(c2_chunk)
-            c2_rows += int(len(c2_chunk))
-    print(f"[INFO] CTU13 scan {path.name}: rows={total:,}, c2_rows={c2_rows:,}")
-    if not chunks:
-        return pd.DataFrame()
-    raw_c2 = pd.concat(chunks, axis=0, ignore_index=True)
-    return _standardize_columns(raw_c2)
+        categories = chunk["Label"].fillna("").astype(str).map(categorize_ctu13_label)
+        category_counts.update(categories.tolist())
+        for label_value, category in ((1, CTU13_CATEGORY_C2), (0, CTU13_CATEGORY_NORMAL)):
+            keep = chunk.loc[categories == category]
+            if not keep.empty:
+                raw_chunks[label_value].append(keep.copy())
+    print(
+        f"[INFO] CTU13 scan {path.name}: rows={sum(category_counts.values()):,}, "
+        f"c2_rows={category_counts.get(CTU13_CATEGORY_C2, 0):,}, "
+        f"normal_rows={category_counts.get(CTU13_CATEGORY_NORMAL, 0):,}, "
+        f"background_rows_excluded={category_counts.get(CTU13_CATEGORY_BACKGROUND, 0):,}"
+    )
+    # _standardize_columns prunes to the canonical feature columns (dropping any
+    # label column) and computes groupwise derived features, so each class is
+    # standardized separately and the label re-attached as a constant.
+    labeled_parts: list[pd.DataFrame] = []
+    for label_value, chunks in raw_chunks.items():
+        if not chunks:
+            continue
+        part = _standardize_columns(pd.concat(chunks, axis=0, ignore_index=True))
+        part["label"] = int(label_value)
+        labeled_parts.append(part)
+    if not labeled_parts:
+        return pd.DataFrame(), dict(category_counts)
+    return pd.concat(labeled_parts, axis=0, ignore_index=True), dict(category_counts)
 
 
 def split_records_by_label_and_host(
@@ -625,6 +763,99 @@ def split_records_by_label_and_host(
             splits[split_name].extend(record for record in class_records if record.host_id in hosts)
     for split_name in splits:
         splits[split_name] = sorted(splits[split_name], key=lambda item: (item.timestamp, item.original_index))
+    return splits
+
+
+def parse_capture_split_spec(raw_value: str) -> dict[str, str]:
+    """Parse 'train=capA,capB;val=capC;test=capD' into {capture_id: split}."""
+    raw_value = (raw_value or "").strip()
+    if not raw_value:
+        return {}
+    assignments: dict[str, str] = {}
+    for part in raw_value.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        split_name, _, capture_list = part.partition("=")
+        split_name = split_name.strip()
+        if split_name not in {"train", "val", "test"}:
+            raise ValueError(f"Unknown split name {split_name!r} in --split-by-capture spec")
+        for capture_id in capture_list.split(","):
+            capture_id = capture_id.strip()
+            if not capture_id:
+                continue
+            if capture_id in assignments:
+                raise ValueError(f"Capture {capture_id!r} assigned to multiple splits")
+            assignments[capture_id] = split_name
+    missing_splits = {"train", "val", "test"} - set(assignments.values())
+    if missing_splits:
+        raise ValueError(f"--split-by-capture spec is missing splits: {sorted(missing_splits)}")
+    return assignments
+
+
+def namespace_hosts_by_capture(records: Sequence[HostSessionRecord]) -> list[HostSessionRecord]:
+    """Prefix host ids with capture_id so the same IP in different captures is a distinct host."""
+    return [replace(record, host_id=f"{record.capture_id}:{record.host_id}") for record in records]
+
+
+def enforce_host_label_purity(
+    records: Sequence[HostSessionRecord],
+) -> tuple[list[HostSessionRecord], dict[str, object]]:
+    """Drop minority-label records of hosts that carry both labels.
+
+    A host appearing in both classes would otherwise be assigned to different
+    splits per class, breaking host disjointness across train/val/test.
+    """
+    label_counts_by_host: dict[str, Counter[int]] = {}
+    for record in records:
+        label_counts_by_host.setdefault(record.host_id, Counter())[int(record.label)] += 1
+
+    conflicting: dict[str, int] = {}
+    for host_id, counts in label_counts_by_host.items():
+        if len(counts) > 1:
+            majority_label = max(counts, key=lambda label: (counts[label], label))
+            conflicting[host_id] = majority_label
+
+    if not conflicting:
+        return list(records), {"conflicting_hosts": 0, "dropped_records": 0, "hosts": []}
+
+    kept: list[HostSessionRecord] = []
+    dropped = 0
+    for record in records:
+        majority_label = conflicting.get(record.host_id)
+        if majority_label is not None and int(record.label) != majority_label:
+            dropped += 1
+            continue
+        kept.append(record)
+    print(
+        f"[WARN] Host label purity: {len(conflicting)} host(s) had mixed labels; "
+        f"dropped {dropped} minority-label record(s)."
+    )
+    return kept, {
+        "conflicting_hosts": len(conflicting),
+        "dropped_records": dropped,
+        "hosts": sorted(conflicting),
+    }
+
+
+def split_records_by_capture(
+    records: Sequence[HostSessionRecord],
+    capture_assignments: dict[str, str],
+) -> dict[str, list[HostSessionRecord]]:
+    present_captures = {str(record.capture_id) for record in records}
+    unassigned = sorted(present_captures - set(capture_assignments))
+    if unassigned:
+        raise ValueError(
+            f"Captures {unassigned} have no split assignment in --split-by-capture. "
+            f"Assigned captures: {sorted(capture_assignments)}"
+        )
+    splits: dict[str, list[HostSessionRecord]] = {"train": [], "val": [], "test": []}
+    for record in records:
+        splits[capture_assignments[str(record.capture_id)]].append(record)
+    for split_name, split_records in splits.items():
+        if not split_records:
+            raise ValueError(f"Capture-separated split {split_name!r} received no records")
+        splits[split_name] = sorted(split_records, key=lambda item: (item.timestamp, item.original_index))
     return splits
 
 
@@ -796,10 +1027,10 @@ def render_markdown(metadata: dict[str, object]) -> str:
         "",
         "## Policy",
         "",
-        "- C2 positives: MCFP botnet files plus CTU-13 rows parsed as C2/botnet.",
-        "- Benign: UWF ZeekData24 benign normalized-Zeek CSV only.",
-        "- UWF attack-tactic folders are excluded because they are not clean C2 labels.",
-        "- Splits are source-host separated.",
+        f"- C2 positives: {'; '.join(metadata['policy']['positive_sources'])}.",
+        f"- Benign: {'; '.join(metadata['policy']['benign_sources'])}.",
+        f"- Excluded: {'; '.join(metadata['policy']['excluded_sources'])}.",
+        f"- Split mode: {metadata['policy']['split_mode']} ({metadata['policy']['host_separation']}).",
         "",
         "## Splits",
         "",

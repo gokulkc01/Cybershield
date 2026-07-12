@@ -435,6 +435,8 @@ def train_host_aware_domain_adaptive_model(
         "best_model_path": best_model_path,
         "validation_metrics_by_budget": checkpoint["validation_metrics_by_budget"],
         "test_metrics_by_budget": test_metrics_by_budget,
+        "test_scores": np.asarray(test_probs, dtype=np.float64).tolist(),
+        "test_labels": np.asarray(test_targets, dtype=np.int64).tolist(),
         "train_npz": train_npz,
         "val_npz": val_npz,
         "test_npz": test_npz,

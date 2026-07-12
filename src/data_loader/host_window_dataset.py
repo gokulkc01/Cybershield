@@ -5,17 +5,16 @@ This module builds causal per-host windows for the research MVP:
 current session + previous N sessions from the same real host.
 
 The arrays saved here are intentionally separate from the production session
-NPZ format.  They preserve host/timestamp/source metadata so evaluations can
+NPZ format. They preserve host/timestamp/source metadata so evaluations can
 prove whether a run used real host identity or synthetic smoke-test grouping.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -207,6 +206,7 @@ def build_extended_host_session_records_from_dataframe(
 
     records: list[HostSessionRecord] = []
     for (src_ip, dst_ip, proto), group in work.groupby(["src_ip", "dst_ip", "proto"], sort=False):
+        del proto
         group = group.sort_values("ts").reset_index(drop=True)
         for session_df in _segment_by_inactivity(group, inactivity_timeout):
             if len(session_df) < min_flows:
@@ -259,11 +259,7 @@ def build_host_session_records_from_sessions(
     timestamps: Sequence[float] | None = None,
     require_real_host_ids: bool = True,
 ) -> list[HostSessionRecord]:
-    """Build HostSessionRecord objects from existing session tensors and metadata.
-
-    This path is useful for tests and transitional pipelines.  Final accuracy
-    claims should use metadata with real source-host IDs.
-    """
+    """Build HostSessionRecord objects from existing session tensors and metadata."""
     if not (len(sessions) == len(labels) == len(masks) == len(metadata)):
         raise ValueError("sessions, labels, masks, and metadata must have equal length")
 
@@ -304,12 +300,7 @@ def build_host_windows(
     feature_names: Sequence[str] = FEATURE_NAMES_EXTENDED,
     session_schema_version: str = FEATURE_SCHEMA_VERSION,
 ) -> HostWindowArrays:
-    """Convert session records into causal host windows.
-
-    History slots are right-aligned: if only one previous session exists, it is
-    placed at index ``history_size - 1``.  ``history_session_masks`` marks real
-    history slots with True.
-    """
+    """Convert session records into causal host windows."""
     if history_size < 1:
         raise ValueError("history_size must be >= 1")
     if not records:
@@ -419,7 +410,7 @@ def load_host_windows_npz(path: str | Path) -> HostWindowArrays:
     """Load host-window arrays saved by :func:`save_host_windows_npz`."""
     data = np.load(path, allow_pickle=True)
     try:
-        schema_version = str(data["schema_version"]) if "schema_version" in data else "unknown"
+        schema_version = _scalar_string(data["schema_version"]) if "schema_version" in data else "unknown"
         if schema_version != HOST_AWARE_SCHEMA_VERSION:
             raise ValueError(
                 f"Host-window schema mismatch: expected {HOST_AWARE_SCHEMA_VERSION}, got {schema_version}"
@@ -443,7 +434,7 @@ def load_host_windows_npz(path: str | Path) -> HostWindowArrays:
             feature_names=tuple(str(name) for name in data["feature_names"].tolist()),
             host_feature_names=tuple(str(name) for name in data["host_feature_names"].tolist()),
             schema_version=schema_version,
-            session_schema_version=str(data["session_schema_version"]),
+            session_schema_version=_scalar_string(data["session_schema_version"]),
             history_size=int(data["history_size"]),
             real_host_identity=bool(data["real_host_identity"]),
         )
@@ -690,3 +681,6 @@ def _session_mean(record: HostSessionRecord, feature_name: str) -> float:
     real = _session_real_rows(record)
     return float(real[:, idx].mean()) if len(real) else 0.0
 
+
+def _scalar_string(value: np.ndarray) -> str:
+    return str(value.item() if hasattr(value, "item") else value)
