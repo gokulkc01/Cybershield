@@ -6,6 +6,8 @@ Robustness metrics, failure analysis, and comparative analytics.
 
 import logging
 import uuid
+from dataclasses import asdict
+from pathlib import Path
 from typing import List
 
 import numpy as np
@@ -28,6 +30,8 @@ from src.red_agent.orchestrator import RedAgentOrchestrator
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_RED_AGENT_SUMMARY = PROJECT_ROOT / "experiments" / "red_agent_host_aware_smoke" / "host_aware_phase1_summary.json"
 
 # Service instances
 detection_service = DetectionService()
@@ -169,6 +173,36 @@ async def compare_robustness(request: RobustnessComparisonRequest):
         
     except Exception as e:
         logger.error(f"Comparison failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/red-agent/demo-report")
+async def get_red_agent_demo_report():
+    """Return the real host-aware Red-Agent demo report from training outputs."""
+    try:
+        if not DEFAULT_RED_AGENT_SUMMARY.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Red-Agent demo summary not found. Run the host-aware Red-Agent smoke command first."
+                ),
+            )
+
+        from scripts.demo_red_agent_report import build_report, render_markdown
+
+        report = build_report(DEFAULT_RED_AGENT_SUMMARY)
+        markdown = render_markdown(report)
+        return {
+            "status": "success",
+            "source": "real_training_outputs",
+            "report": asdict(report),
+            "markdown": markdown,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to build Red-Agent demo report: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

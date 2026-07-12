@@ -7,6 +7,7 @@ import HostInsightsPage from '@/components/pages/host-insights';
 import MutationLabPage from '@/components/pages/mutation-lab';
 import RobustnessAnalyticsPage from '@/components/pages/robustness-analytics';
 import ModelDemoPage from '@/components/pages/model-demo';
+import RedAgentDemoPage from '@/components/pages/red-agent-demo';
 import UploadPage from '@/components/pages/upload';
 import Navigation from '@/components/layout/navigation';
 
@@ -40,6 +41,7 @@ export default function Home() {
                 {selectedPage === 'host-insights' && <HostInsightsPage />}
                 {selectedPage === 'mutation-lab' && <MutationLabPage />}
                 {selectedPage === 'robustness' && <RobustnessAnalyticsPage />}
+                {selectedPage === 'red-agent-demo' && <RedAgentDemoPage />}
                 {selectedPage === 'model-demo' && <ModelDemoPage />}
                 {selectedPage === 'upload' && <UploadPage />}
             </main>

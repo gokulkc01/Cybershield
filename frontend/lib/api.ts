@@ -98,6 +98,11 @@ export class CyberShieldAPI {
         return response.data;
     }
 
+    async getRedAgentDemoReport() {
+        const response = await this.client.get('/robustness/red-agent/demo-report');
+        return response.data;
+    }
+
     /**
      * ARTIFACTS ENDPOINTS
      */

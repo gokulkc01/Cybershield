@@ -65,7 +65,7 @@ export type AppState = {
     setIsLoading: (loading: boolean) => void;
     error: string | null;
     setError: (error: string | null) => void;
-    selectedPage: 'dashboard' | 'analysis' | 'mutation-lab' | 'robustness' | 'model-demo' | 'upload' | 'host-insights';
+    selectedPage: 'dashboard' | 'analysis' | 'mutation-lab' | 'red-agent-demo' | 'robustness' | 'model-demo' | 'upload' | 'host-insights';
     setSelectedPage: (page: AppState['selectedPage']) => void;
 
     // Reset all state

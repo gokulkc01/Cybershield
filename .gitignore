@@ -119,3 +119,6 @@ experiments/
 
 # Logs
 *.log
+
+# graphify knowledge-graph outputs (regenerate with `graphify update`)
+graphify-out/

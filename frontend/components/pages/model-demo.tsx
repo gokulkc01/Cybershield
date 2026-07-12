@@ -9,22 +9,81 @@
 
 import { useState } from 'react';
 import toast from 'react-hot-toast';
-import { Upload, CheckCircle, AlertCircle, Loader } from 'lucide-react';
+import { Upload, CheckCircle, Loader } from 'lucide-react';
 
 interface Prediction {
     index: number;
     domain: string;
     probability: number;
+    threshold?: number;
     label: string;
     label_int: number;
+    ground_truth_label?: string;
+    ground_truth_label_int?: number;
+    correct?: boolean;
+    host_id?: string;
+    dest_id?: string;
+}
+
+type ModelType = 'session' | 'domain_adaptive' | 'host_aware';
+
+const modelOptions: Record<ModelType, { label: string; input: string; demoFile: string; description: string }> = {
+    session: {
+        label: 'Session Model',
+        input: 'Session NPZ',
+        demoFile: 'D:\\CyberShield\\data\\processed\\uwf_adaptation_split\\test_sessions.npz',
+        description: 'Plain Transformer over individual sessions.',
+    },
+    domain_adaptive: {
+        label: 'Domain-Adaptive Model',
+        input: 'Session NPZ',
+        demoFile: 'D:\\CyberShield\\data\\processed\\uwf_adaptation_split\\test_sessions.npz',
+        description: 'Current default session model with domain-specific thresholds.',
+    },
+    host_aware: {
+        label: 'Host-Aware Model',
+        input: 'Host-window NPZ',
+        demoFile: 'D:\\CyberShield\\data\\processed\\host_aware_uwf_attack_mvp\\test_host_windows.npz',
+        description: 'Uses current session plus prior sessions from the same host. Best recall demo path.',
+    },
+};
+
+interface EvaluationMetrics {
+    has_labels: boolean;
+    total: number;
+    correct: number;
+    incorrect: number;
+    accuracy: number;
+    precision: number;
+    recall: number;
+    f1: number;
+    specificity: number;
+    false_positive_rate: number;
+    false_negative_rate: number;
+    ground_truth: {
+        c2: number;
+        benign: number;
+    };
+    predicted: {
+        c2: number;
+        benign: number;
+    };
+    confusion_matrix: {
+        true_positive: number;
+        true_negative: number;
+        false_positive: number;
+        false_negative: number;
+    };
 }
 
 export default function ModelDemoPage() {
     const [apiUrl, setApiUrl] = useState('http://localhost:8000');
+    const [modelType, setModelType] = useState<ModelType>('domain_adaptive');
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const [predictions, setPredictions] = useState<Prediction[]>([]);
     const [summary, setSummary] = useState<any>(null);
+    const [evaluation, setEvaluation] = useState<EvaluationMetrics | null>(null);
 
     const handleDragOver = (e: React.DragEvent) => {
         e.preventDefault();
@@ -66,7 +125,7 @@ export default function ModelDemoPage() {
             const formData = new FormData();
             formData.append('file', selectedFile);
 
-            const response = await fetch(`${apiUrl}/api/v1/predict/predict-file`, {
+            const response = await fetch(`${apiUrl}/api/v1/predict/predict-file?model_type=${modelType}`, {
                 method: 'POST',
                 body: formData,
             });
@@ -80,7 +139,9 @@ export default function ModelDemoPage() {
 
             if (data.predictions && data.predictions.length > 0) {
                 const preds = data.predictions as Prediction[];
+                const metrics = data.evaluation?.has_labels ? data.evaluation as EvaluationMetrics : null;
                 setPredictions(preds);
+                setEvaluation(metrics);
 
                 // Calculate summary
                 const c2Count = preds.filter(p => p.label_int === 1).length;
@@ -88,11 +149,16 @@ export default function ModelDemoPage() {
                 const avgProb = (preds.reduce((sum, p) => sum + p.probability, 0) / preds.length * 100).toFixed(1);
 
                 setSummary({
+                    modelType: data.model_type || modelType,
+                    modelLabel: data.model_label || modelOptions[modelType].label,
+                    inputFormat: data.input_format || modelOptions[modelType].input,
+                    threshold: typeof data.threshold === 'number' ? data.threshold : undefined,
                     totalSessions: preds.length,
                     c2Count,
                     benignCount,
                     detectionRate: ((c2Count / preds.length) * 100).toFixed(1),
                     avgConfidence: avgProb,
+                    labeled: Boolean(metrics),
                 });
 
                 toast.success(`✅ Analysis complete! ${preds.length} sessions analyzed.`);
@@ -111,7 +177,10 @@ export default function ModelDemoPage() {
         setSelectedFile(null);
         setPredictions([]);
         setSummary(null);
+        setEvaluation(null);
     };
+
+    const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
 
     return (
         <div className="section container-max">
@@ -143,6 +212,48 @@ export default function ModelDemoPage() {
                         <p className="text-xs text-neutral-500 mt-1">
                             Default: http://localhost:8000
                         </p>
+                    </div>
+
+                    <div className="mb-4">
+                        <label className="block text-sm font-medium text-neutral-700 mb-2">
+                            Model
+                        </label>
+                        <div className="grid grid-cols-1 gap-2">
+                            {(Object.keys(modelOptions) as ModelType[]).map((key) => (
+                                <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() => {
+                                        setModelType(key);
+                                        setPredictions([]);
+                                        setSummary(null);
+                                        setEvaluation(null);
+                                    }}
+                                    className={`text-left p-3 border rounded-lg transition-colors ${modelType === key
+                                            ? 'border-cyber-500 bg-blue-50'
+                                            : 'border-neutral-200 hover:border-neutral-300'
+                                        }`}
+                                >
+                                    <div className="flex items-center justify-between gap-3">
+                                        <span className="font-semibold text-neutral-900">
+                                            {modelOptions[key].label}
+                                        </span>
+                                        <span className="text-xs px-2 py-1 rounded bg-neutral-100 text-neutral-700">
+                                            {modelOptions[key].input}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-neutral-600 mt-1">
+                                        {modelOptions[key].description}
+                                    </p>
+                                </button>
+                            ))}
+                        </div>
+                        <div className="mt-3 p-3 bg-neutral-50 border border-neutral-200 rounded-lg">
+                            <p className="text-xs text-neutral-600 mb-1">Recommended demo file</p>
+                            <p className="text-xs font-mono text-neutral-800 break-all">
+                                {modelOptions[modelType].demoFile}
+                            </p>
+                        </div>
                     </div>
 
                     <div
@@ -210,6 +321,16 @@ export default function ModelDemoPage() {
 
                     {summary ? (
                         <div className="space-y-4">
+                            <div className="bg-neutral-50 p-4 rounded-lg border border-neutral-200">
+                                <p className="text-xs text-neutral-600">Selected Model</p>
+                                <p className="text-lg font-bold text-neutral-900">
+                                    {summary.modelLabel}
+                                </p>
+                                <p className="text-xs text-neutral-600 mt-1">
+                                    Input: {summary.inputFormat}
+                                    {typeof summary.threshold === 'number' && ` | Threshold: ${summary.threshold.toFixed(4)}`}
+                                </p>
+                            </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="bg-blue-50 p-4 rounded-lg">
                                     <p className="text-xs text-neutral-600">Total Sessions</p>
@@ -242,6 +363,21 @@ export default function ModelDemoPage() {
                                     {summary.avgConfidence}%
                                 </p>
                             </div>
+                            {summary.labeled ? (
+                                <div className="bg-emerald-50 p-4 rounded-lg border border-emerald-200">
+                                    <p className="text-xs text-neutral-600 mb-1">Ground Truth Labels</p>
+                                    <p className="text-sm font-semibold text-emerald-800">
+                                        Labels found. Correctness metrics are shown below.
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="bg-neutral-50 p-4 rounded-lg border border-neutral-200">
+                                    <p className="text-xs text-neutral-600 mb-1">Ground Truth Labels</p>
+                                    <p className="text-sm font-semibold text-neutral-700">
+                                        No labels found. This result shows predictions only.
+                                    </p>
+                                </div>
+                            )}
                         </div>
                     ) : (
                         <div className="flex flex-col items-center justify-center h-60 text-center">
@@ -253,6 +389,118 @@ export default function ModelDemoPage() {
                     )}
                 </div>
             </div>
+
+            {/* Evaluation Metrics */}
+            {evaluation && (
+                <div className="card mb-8">
+                    <h2 className="text-xl font-bold text-neutral-900 mb-4">
+                        Correctness Evaluation
+                    </h2>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div className="bg-emerald-50 p-4 rounded-lg">
+                            <p className="text-xs text-neutral-600">Accuracy</p>
+                            <p className="text-2xl font-bold text-emerald-700">
+                                {formatPercent(evaluation.accuracy)}
+                            </p>
+                        </div>
+                        <div className="bg-blue-50 p-4 rounded-lg">
+                            <p className="text-xs text-neutral-600">Precision</p>
+                            <p className="text-2xl font-bold text-blue-700">
+                                {formatPercent(evaluation.precision)}
+                            </p>
+                        </div>
+                        <div className="bg-cyan-50 p-4 rounded-lg">
+                            <p className="text-xs text-neutral-600">Recall</p>
+                            <p className="text-2xl font-bold text-cyan-700">
+                                {formatPercent(evaluation.recall)}
+                            </p>
+                        </div>
+                        <div className="bg-violet-50 p-4 rounded-lg">
+                            <p className="text-xs text-neutral-600">F1 Score</p>
+                            <p className="text-2xl font-bold text-violet-700">
+                                {formatPercent(evaluation.f1)}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="border border-neutral-200 rounded-lg p-4">
+                            <h3 className="font-semibold text-neutral-900 mb-3">Dataset Labels</h3>
+                            <div className="space-y-2 text-sm">
+                                <div className="flex justify-between">
+                                    <span className="text-neutral-600">Ground-truth C2</span>
+                                    <span className="font-semibold">{evaluation.ground_truth.c2}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-neutral-600">Ground-truth benign</span>
+                                    <span className="font-semibold">{evaluation.ground_truth.benign}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-neutral-600">Correct predictions</span>
+                                    <span className="font-semibold text-emerald-700">{evaluation.correct}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-neutral-600">Incorrect predictions</span>
+                                    <span className="font-semibold text-red-700">{evaluation.incorrect}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="border border-neutral-200 rounded-lg p-4">
+                            <h3 className="font-semibold text-neutral-900 mb-3">Predicted Classes</h3>
+                            <div className="space-y-2 text-sm">
+                                <div className="flex justify-between">
+                                    <span className="text-neutral-600">Predicted C2</span>
+                                    <span className="font-semibold">{evaluation.predicted.c2}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-neutral-600">Predicted benign</span>
+                                    <span className="font-semibold">{evaluation.predicted.benign}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-neutral-600">False positive rate</span>
+                                    <span className="font-semibold">{formatPercent(evaluation.false_positive_rate)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-neutral-600">False negative rate</span>
+                                    <span className="font-semibold">{formatPercent(evaluation.false_negative_rate)}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="border border-neutral-200 rounded-lg p-4">
+                            <h3 className="font-semibold text-neutral-900 mb-3">Confusion Matrix</h3>
+                            <div className="grid grid-cols-2 gap-2 text-center text-sm">
+                                <div className="bg-emerald-50 rounded p-3">
+                                    <p className="text-xs text-neutral-600">True Positive</p>
+                                    <p className="text-xl font-bold text-emerald-700">
+                                        {evaluation.confusion_matrix.true_positive}
+                                    </p>
+                                </div>
+                                <div className="bg-red-50 rounded p-3">
+                                    <p className="text-xs text-neutral-600">False Positive</p>
+                                    <p className="text-xl font-bold text-red-700">
+                                        {evaluation.confusion_matrix.false_positive}
+                                    </p>
+                                </div>
+                                <div className="bg-red-50 rounded p-3">
+                                    <p className="text-xs text-neutral-600">False Negative</p>
+                                    <p className="text-xl font-bold text-red-700">
+                                        {evaluation.confusion_matrix.false_negative}
+                                    </p>
+                                </div>
+                                <div className="bg-emerald-50 rounded p-3">
+                                    <p className="text-xs text-neutral-600">True Negative</p>
+                                    <p className="text-xl font-bold text-emerald-700">
+                                        {evaluation.confusion_matrix.true_negative}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Predictions Table */}
             {predictions.length > 0 && (
@@ -266,8 +514,20 @@ export default function ModelDemoPage() {
                                 <tr>
                                     <th className="px-4 py-3 text-left font-semibold">Index</th>
                                     <th className="px-4 py-3 text-left font-semibold">Domain</th>
+                                    {predictions.some(pred => pred.host_id) && (
+                                        <th className="px-4 py-3 text-left font-semibold">Host</th>
+                                    )}
                                     <th className="px-4 py-3 text-left font-semibold">Label</th>
+                                    {evaluation && (
+                                        <>
+                                            <th className="px-4 py-3 text-left font-semibold">Ground Truth</th>
+                                            <th className="px-4 py-3 text-left font-semibold">Correct?</th>
+                                        </>
+                                    )}
                                     <th className="px-4 py-3 text-left font-semibold">Confidence</th>
+                                    {predictions.some(pred => typeof pred.threshold === 'number') && (
+                                        <th className="px-4 py-3 text-left font-semibold">Threshold</th>
+                                    )}
                                 </tr>
                             </thead>
                             <tbody>
@@ -284,6 +544,11 @@ export default function ModelDemoPage() {
                                                 {pred.domain}
                                             </span>
                                         </td>
+                                        {predictions.some(item => item.host_id) && (
+                                            <td className="px-4 py-3 text-xs text-neutral-600">
+                                                {pred.host_id || '-'}
+                                            </td>
+                                        )}
                                         <td className="px-4 py-3">
                                             <span className={`px-2 py-1 rounded text-xs font-bold ${pred.label_int === 1
                                                     ? 'bg-red-100 text-red-800'
@@ -292,6 +557,26 @@ export default function ModelDemoPage() {
                                                 {pred.label}
                                             </span>
                                         </td>
+                                        {evaluation && (
+                                            <>
+                                                <td className="px-4 py-3">
+                                                    <span className={`px-2 py-1 rounded text-xs font-bold ${pred.ground_truth_label_int === 1
+                                                            ? 'bg-red-100 text-red-800'
+                                                            : 'bg-green-100 text-green-800'
+                                                        }`}>
+                                                        {pred.ground_truth_label}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`px-2 py-1 rounded text-xs font-bold ${pred.correct
+                                                            ? 'bg-emerald-100 text-emerald-800'
+                                                            : 'bg-red-100 text-red-800'
+                                                        }`}>
+                                                        {pred.correct ? 'Yes' : 'No'}
+                                                    </span>
+                                                </td>
+                                            </>
+                                        )}
                                         <td className="px-4 py-3">
                                             <div className="flex items-center gap-2">
                                                 <div className="flex-1 bg-neutral-200 rounded-full h-2">
@@ -307,6 +592,11 @@ export default function ModelDemoPage() {
                                                 </span>
                                             </div>
                                         </td>
+                                        {predictions.some(item => typeof item.threshold === 'number') && (
+                                            <td className="px-4 py-3 text-xs text-neutral-600">
+                                                {typeof pred.threshold === 'number' ? pred.threshold.toFixed(4) : '-'}
+                                            </td>
+                                        )}
                                     </tr>
                                 ))}
                             </tbody>
