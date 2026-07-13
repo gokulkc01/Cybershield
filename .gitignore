@@ -55,7 +55,7 @@ htmlcov/
 data/
 data/raw/
 data/processed/
-models/
+/models/
 artifacts/
 
 # OS files
