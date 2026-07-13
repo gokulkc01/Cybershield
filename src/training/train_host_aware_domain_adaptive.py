@@ -143,6 +143,31 @@ def _preprocess_splits(
     )
 
 
+def _apply_host_context_ablations(
+    arrays: HostWindowArrays,
+    *,
+    ablate_host_features: bool,
+    history_limit: int | None,
+) -> HostWindowArrays:
+    """Zero the host summary features and/or truncate history to the K most recent sessions.
+
+    History slots are ordered oldest -> newest (padding at the front), so a
+    limit keeps only the trailing ``history_limit`` columns. ``history_limit=0``
+    removes host history entirely while keeping tensor shapes intact.
+    """
+    if ablate_host_features:
+        arrays.host_features = np.zeros_like(arrays.host_features)
+    if history_limit is not None:
+        if history_limit < 0:
+            raise ValueError("history_limit must be >= 0")
+        cut = arrays.history_size - int(history_limit)
+        if cut > 0:
+            arrays.history_sessions[:, :cut] = 0.0
+            arrays.history_flow_masks[:, :cut] = False
+            arrays.history_session_masks[:, :cut] = False
+    return arrays
+
+
 def _score_model(
     model: HostAwareDomainAdaptiveTransformer,
     loader: torch.utils.data.DataLoader,
@@ -242,6 +267,8 @@ def train_host_aware_domain_adaptive_model(
     normalize_host_features: bool = True,
     auxiliary_loss_weight: float = 0.2,
     seed: int = 42,
+    ablate_host_features: bool = False,
+    history_limit: int | None = None,
 ) -> dict:
     os.makedirs(model_save_dir, exist_ok=True)
     best_model_path = os.path.join(model_save_dir, "best_host_aware_transformer.pth")
@@ -260,6 +287,18 @@ def train_host_aware_domain_adaptive_model(
         raise ValueError(f"Expected {HOST_AWARE_SCHEMA_VERSION}, got {train_arrays.schema_version}")
     if not train_arrays.real_host_identity:
         print("[WARN] Training split does not claim real host identity; use only for smoke tests.")
+
+    if ablate_host_features or history_limit is not None:
+        print(
+            f"[INFO] Host-context ablations: ablate_host_features={ablate_host_features}, "
+            f"history_limit={history_limit}"
+        )
+        for arrays in (train_arrays, val_arrays, test_arrays):
+            _apply_host_context_ablations(
+                arrays,
+                ablate_host_features=ablate_host_features,
+                history_limit=history_limit,
+            )
 
     transform_config = ExtendedFeatureTransformConfig()
     train_arrays, val_arrays, test_arrays, feature_normalizer, host_feature_normalizer = _preprocess_splits(
@@ -448,6 +487,8 @@ def train_host_aware_domain_adaptive_model(
         "session_len": train_arrays.session_len,
         "history_size": train_arrays.history_size,
         "real_host_identity": bool(train_arrays.real_host_identity),
+        "ablate_host_features": bool(ablate_host_features),
+        "history_limit": history_limit,
         "default_fpr_budget": default_fpr_budget,
         "fpr_budgets": list(fpr_budgets),
         "epochs_requested": epochs,
@@ -499,6 +540,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_normalize_features", action="store_true")
     parser.add_argument("--no_normalize_host_features", action="store_true")
+    parser.add_argument("--ablate_host_features", action="store_true")
+    parser.add_argument("--history_limit", type=int, default=None)
     args = parser.parse_args()
 
     train_host_aware_domain_adaptive_model(
@@ -516,6 +559,8 @@ def main() -> None:
         normalize_host_features=not args.no_normalize_host_features,
         auxiliary_loss_weight=args.auxiliary_loss_weight,
         seed=args.seed,
+        ablate_host_features=args.ablate_host_features,
+        history_limit=args.history_limit,
     )
 
 

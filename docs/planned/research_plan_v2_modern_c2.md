@@ -68,7 +68,8 @@ Self-supervision is a *tool* for C2/C3, **not** the headline (that lane is crowd
 
 ---
 
-### Phase 1 — Baselines on the honest harness
+### Phase 1 — Baselines on the honest harness  ✅ COMPLETE (2026-07-12; ablation sweep finishing in background)
+**Outcome:** gate PASSED — see `docs/validated/phase1_baselines.md`. Headline: **the floors match the deep models.** A single `resp_bytes` feature ties the c2_transformer on test AUC (0.9681 vs 0.9670); a RandomForest ties the host-aware transformer (0.9902 both), on pure volume statistics. The new Fourier/autocorrelation beaconing detector scores **below chance** (test AUC 0.224) — benign update/keep-alive traffic is more periodic than 2011 botnet C2, and C2 sessions concentrate in low-event pairs. Watch item resolved: the host-aware val saturation is a **host-identity shortcut** (logreg on 15 host summary features alone: val AUC 0.9964; every host in every split is label-pure — one infected host per capture), so the host-aware base-rate advantage is discounted pending the host-context ablation sweep (`experiments/phase1_host_aware_ablations/`). New Phase 2 requirement derived: testbed must break host-label purity (multiple/partially infected hosts) in addition to volume separability.
 **Objective:** establish credible reference numbers.
 **Tasks:** run (a) RandomForest (`src/models/baseline_rf.py`), (b) a **new Fourier/autocorrelation beaconing detector** (classic C2 timing signal — currently absent), (c) the existing C2Transformer — all multi-seed with CIs on the Phase 0 split.
 **Gate:** differences between methods are believable and statistically significant; no method is trivially perfect.
